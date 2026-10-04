@@ -1,0 +1,10 @@
+{
+  "name": "betterdiscord-vac34-plugins",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BetterDiscord plugins for media filtering, emoji remapping, and silent typing.",
+  "scripts": {
+    "check": "node --check MediaFilter.plugin.js && node --check GoodEmoji.plugin.js && node --check SilentTyping.plugin.js"
+  },
+  "license": "MIT"
+}
