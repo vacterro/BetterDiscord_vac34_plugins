@@ -709,7 +709,7 @@ function SettingsPanel() {
     );
 }
 
-const css = \`
+const css = `
 .vac34-mf-shell { min-width: 0; max-width: 100%; }
 .vac34-mf-hidden {
     display: flex !important; align-items: center !important; width: max-content !important;
@@ -727,7 +727,7 @@ const css = \`
 .vac34-mf-shown > .vac34-mf-toggle { position: absolute; z-index: 4; top: 4px; right: 4px; opacity: .78; }
 .vac34-mf-shown > .vac34-mf-toggle:hover { opacity: 1; }
 .vac34-mf-hide-embed-link { display: none !important; }
-.\${STICKER_ROW_CLASS} { display: none !important; }
+.${STICKER_ROW_CLASS} { display: none !important; }
 html[data-vac34-mf-gifs] button[aria-label="gif" i],
 html[data-vac34-mf-gifs] button[aria-label*="gif picker" i],
 html[data-vac34-mf-gifs] button[aria-label*="гиф" i],
@@ -739,7 +739,7 @@ html[data-vac34-mf-stickers] button[aria-label*="стикер" i],
 html[data-vac34-mf-stickers] [role="tab"][aria-controls*="sticker" i],
 html[data-vac34-mf-stickers] [aria-controls$="sticker-picker"],
 html[data-vac34-mf-stickers] [id$="-sticker-picker"] { display: none !important; }
-\`;
+`;
 
 const index = createPlugin({
     start() {
