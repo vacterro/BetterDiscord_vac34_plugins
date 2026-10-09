@@ -1,6 +1,6 @@
 /**
  * @name MediaFilter
- * @version 1.0.0
+ * @version 1.0.2
  * @author vacterro
  * @description Collapses images, videos and embeds with inline reveal, removes GIFs and stickers, and supports per-server scope.
  * @source https://github.com/vacterro/BetterDiscord_vac34_plugins/blob/main/MediaFilter.plugin.js
@@ -480,12 +480,89 @@ function linkMatchesEmbed(href, embeds) {
 }
 
 const STICKER_ROW_CLASS = "vac34-mf-sticker-empty-row";
+const STICKER_HIDDEN_CLASS = "vac34-mf-sticker-hidden";
+const STICKER_ACCESSORY_CLASS = "vac34-mf-sticker-accessory-hidden";
+const GIF_HIDDEN_CLASS = "vac34-mf-gif-hidden";
+const MEDIA_ROW_SELECTOR = 'li[id^="chat-messages-"], [data-list-item-id^="chat-messages"], [class*="messageListItem"]';
 const stickerOnlyIds = new Set();
 let stickerObserver = null;
+let storeListenersAttached = false;
+let queuedMediaRows = new Set();
+let mediaReconcileQueued = false;
+let fullMediaReconcileQueued = false;
+
+// React's accessories component is not a stable Discord API. Prefer real message
+// records when they are available, and keep the DOM path for cache misses.
+function messageForRow(row) {
+    const id = rowMessageId(row);
+    if (!id) return null;
+    try {
+        const stores = BdApi.Webpack.Stores;
+        const messageStore = BdApi.Webpack.getStore?.("MessageStore") || stores?.MessageStore;
+        const channelStore = BdApi.Webpack.getStore?.("SelectedChannelStore") || stores?.SelectedChannelStore;
+        const channelId = channelStore?.getChannelId?.();
+        if (!channelId || !messageStore) return null;
+        return messageStore.getMessage?.(channelId, id)
+            || messageStore.getMessages?.(channelId)?.get?.(id)
+            || null;
+    }
+    catch { return null; }
+}
+
+function hasStickers(message) {
+    return stickerIdsFromMessage(message).size > 0;
+}
+
+function hasUnfilteredMedia(message, settings) {
+    if (!message || typeof message !== "object") return false;
+    if (Array.isArray(message.attachments)
+        && message.attachments.some((item) => settings.hideGifs === false || !isGifAttachment(item))) return true;
+    if (Array.isArray(message.embeds)
+        && message.embeds.some((item) => settings.hideGifs === false || !isGifEmbed(item))) return true;
+    if (settings.hideStickers === false && hasStickers(message)) return true;
+    for (const key of ["components", "giftCodes", "soundboardSounds"]) {
+        if (Array.isArray(message[key]) && message[key].length > 0) return true;
+    }
+    if (message.poll) return true;
+    if (Array.isArray(message.messageSnapshots)) {
+        for (const snapshot of message.messageSnapshots) {
+            if (hasUnfilteredMedia(snapshot?.message, settings)) return true;
+        }
+    }
+    return false;
+}
+
+function gifOnlyMessage(message, settings) {
+    if (!message || settings.hideGifs === false) return false;
+    if (String(message.content || "").trim()) return false;
+    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    const embeds = Array.isArray(message.embeds) ? message.embeds : [];
+    if (!attachments.some(isGifAttachment) && !embeds.some(isGifEmbed)) return false;
+    return !hasUnfilteredMedia(message, settings);
+}
+
+function collectStickerIds(msg, out) {
+    if (!msg || typeof msg !== "object") return;
+    for (const key of ["stickerItems", "stickers", "sticker_items"]) {
+        const list = msg[key];
+        if (Array.isArray(list)) {
+            for (const item of list) {
+                const id = item?.id != null ? String(item.id) : (typeof item === "string" ? item : "");
+                if (id) out.add(id);
+            }
+        }
+    }
+    if (Array.isArray(msg.messageSnapshots)) {
+        for (const snap of msg.messageSnapshots) {
+            collectStickerIds(snap?.message, out);
+        }
+    }
+}
 
 function stickerIdsFromMessage(message) {
-    const items = Array.isArray(message?.stickerItems) ? message.stickerItems : [];
-    return new Set(items.map((item) => String(item?.id || "")).filter(Boolean));
+    const ids = new Set();
+    collectStickerIds(message, ids);
+    return ids;
 }
 
 function messageHasNonStickerPayload(message) {
@@ -494,15 +571,22 @@ function messageHasNonStickerPayload(message) {
     for (const key of ["attachments", "embeds", "components", "giftCodes", "soundboardSounds"]) {
         if (Array.isArray(message[key]) && message[key].length > 0) return true;
     }
-    if (message.poll || message.messageReference) return true;
-    return Array.isArray(message.messageSnapshots) && message.messageSnapshots.length > 0;
+    if (message.poll) return true;
+    if (Array.isArray(message.messageSnapshots)) {
+        for (const snap of message.messageSnapshots) {
+            if (messageHasNonStickerPayload(snap?.message)) return true;
+        }
+    }
+    return false;
 }
 
 function messageWithoutStickers(message) {
     if (!message || typeof message !== "object") return message;
     const hasItems = Array.isArray(message.stickerItems) && message.stickerItems.length > 0;
     const hasLegacy = Array.isArray(message.stickers) && message.stickers.length > 0;
-    if (!hasItems && !hasLegacy) return message;
+    const hasRaw = Array.isArray(message.sticker_items) && message.sticker_items.length > 0;
+    const hasSnapshots = Array.isArray(message.messageSnapshots) && message.messageSnapshots.length > 0;
+    if (!hasItems && !hasLegacy && !hasRaw && !hasSnapshots) return message;
 
     let clone;
     try {
@@ -511,6 +595,7 @@ function messageWithoutStickers(message) {
         const descriptors = Object.getOwnPropertyDescriptors(message);
         delete descriptors.stickerItems;
         delete descriptors.stickers;
+        delete descriptors.sticker_items;
         Object.defineProperties(clone, descriptors);
     }
     catch { clone = Object.assign({}, message); }
@@ -519,6 +604,28 @@ function messageWithoutStickers(message) {
     catch { clone.stickerItems = []; }
     try { Object.defineProperty(clone, "stickers", { value: [], enumerable: true, configurable: true, writable: true }); }
     catch { clone.stickers = []; }
+    try { Object.defineProperty(clone, "sticker_items", { value: [], enumerable: true, configurable: true, writable: true }); }
+    catch { clone.sticker_items = []; }
+
+    if (hasSnapshots) {
+        try {
+            clone.messageSnapshots = clone.messageSnapshots.map((snapshot) => {
+                if (!snapshot?.message) return snapshot;
+                return {
+                    ...snapshot,
+                    message: messageWithoutStickers(snapshot.message),
+                };
+            });
+        } catch {}
+    }
+
+    if (typeof clone.isStickerMessage === "function") {
+        try { clone.isStickerMessage = () => false; } catch {}
+    }
+    if (typeof clone.hasStickers === "function") {
+        try { clone.hasStickers = () => false; } catch {}
+    }
+
     return clone;
 }
 
@@ -540,15 +647,31 @@ function objectStickerId(value, ids) {
 function reactNodeIsSticker(node, ids) {
     if (!node || typeof node !== "object") return false;
     const props = node.props || {};
-    if (objectStickerId(props.sticker, ids) || objectStickerId(props.stickerItem, ids)) return true;
+
+    if (objectStickerId(props.sticker, ids) || objectStickerId(props.stickerItem, ids) || objectStickerId(props.item, ids)) return true;
     if (props.stickerId != null && (!ids || ids.size === 0 || ids.has(String(props.stickerId)))) return true;
-    if (Array.isArray(props.stickerItems) && props.stickerItems.some((item) => objectStickerId(item, ids))) return true;
-    if (Array.isArray(props.stickers) && props.stickers.some((item) => objectStickerId(item, ids))) return true;
-    for (const key of ["src", "href", "url", "poster"]) if (stringMentionsSticker(props[key], ids)) return true;
     if (props["data-sticker-id"] != null) {
         const id = String(props["data-sticker-id"]);
         return !ids || ids.size === 0 || ids.has(id);
     }
+    if (props["data-type"] === "sticker") return true;
+
+    if (Array.isArray(props.stickerItems) && props.stickerItems.some((item) => objectStickerId(item, ids))) return true;
+    if (Array.isArray(props.stickers) && props.stickers.some((item) => objectStickerId(item, ids))) return true;
+
+    for (const key of ["src", "href", "url", "poster"]) {
+        if (stringMentionsSticker(props[key], ids)) return true;
+    }
+
+    const typeName = typeof node.type === "string" ? node.type : (node.type?.displayName || node.type?.name || "");
+    if (/sticker/i.test(typeName)) return true;
+
+    const className = String(props.className || "");
+    if (/(?:stickerNode|messageSticker|clickableSticker|stickerWrapper|stickerContainer|stickers_)/i.test(className)) return true;
+
+    const ariaLabel = String(props["aria-label"] || "");
+    if (/(?:sticker|стикер)/i.test(ariaLabel) && (props.role === "img" || node.type === "canvas" || node.type === "img")) return true;
+
     return false;
 }
 
@@ -577,11 +700,115 @@ function pruneStickerReactTree(node, ids) {
 function findMessageAccessoriesModule() {
     try {
         return BdApi.Webpack.getModule(
-            (mod) => mod?.prototype?.constructor && String(mod.prototype.constructor).includes("attachmentToDelete"),
+            (mod) => (mod?.prototype?.constructor && String(mod.prototype.constructor).includes("attachmentToDelete"))
+                || (typeof mod === "function" && (String(mod).includes("attachmentToDelete") || (String(mod).includes("renderAccessories") && String(mod).includes("message")))),
             { searchExports: true },
         );
     }
     catch { return null; }
+}
+
+const STICKER_ELEMENT_SELECTORS = [
+    '[class*="stickerNode"]',
+    '[class*="messageSticker"]',
+    '[class*="clickableSticker"]',
+    '[class*="stickerWrapper"]',
+    '[class*="stickerContainer"]',
+    '[class*="stickers_"]',
+    '[data-type="sticker"]',
+    '[data-sticker-id]',
+    'img[src*="/stickers/"]',
+    'canvas[data-type="sticker"]',
+    '[class*="assetWrapper_"][class*="sticker"]',
+    '[class*="lottieCanvas"][aria-label*="sticker" i]',
+    '[class*="lottieCanvas"][aria-label*="стикер" i]',
+    'div[aria-label*="sticker" i]',
+    'div[aria-label*="стикер" i]',
+].join(", ");
+
+// Image and video URLs from GIF providers often end in .webp or .mp4. They do
+// not hit the renderer's image/gif check, especially after lazy virtualization.
+const GIF_MEDIA_SELECTOR = [
+    'img[src], img[srcset], img[data-src], video[src], video[poster], video source[src]',
+    '[data-type="gif"], [data-type="gifv"]',
+].join(", ");
+
+function isGifMediaElement(el) {
+    if (!el?.getAttribute) return false;
+    if (/^gifv?$/i.test(el.getAttribute("data-type") || "")) return true;
+    const urls = ["src", "srcset", "poster", "data-src"].map((key) => el.getAttribute(key) || "").join(" ");
+    if (/(?:\/|\b)(?:media\.)?(?:tenor\.com|giphy\.com|giphy\.media|klipy\.com)\//i.test(urls)) return true;
+    if (/\.gif(?:[?#\s,]|$)|[?&]animated=true(?:&|$)/i.test(urls)) return true;
+    return false;
+}
+
+function gifContainer(el, row) {
+    // Never go above a known media boundary: message text and avatar must survive.
+    const mediaBoundary = el.closest?.(
+        '[class*="embedWrapper"], [class*="mosaicItem"], [class*="attachmentContainer"], '
+        + '[class*="visualMediaItem"], [class*="mediaContainer"], [class*="imageWrapper"], '
+        + '[class*="videoContainer"], [class*="gifContainer"], [class*="embedMedia"], '
+        + '[class*="clickableWrapper"]'
+    );
+    if (mediaBoundary && row.contains(mediaBoundary) && mediaBoundary !== row) return mediaBoundary;
+    const parent = el.parentElement;
+    return parent && row.contains(parent) && parent !== row ? parent : el;
+}
+
+function reconcileGifMedia(row, enabled) {
+    for (const old of row.querySelectorAll?.("." + GIF_HIDDEN_CLASS) || []) {
+        const hasGifDescendant = Array.from(old.querySelectorAll?.(GIF_MEDIA_SELECTOR) || []).some(isGifMediaElement);
+        if (!enabled || !old.isConnected || (!isGifMediaElement(old) && !hasGifDescendant)) {
+            old.classList.remove(GIF_HIDDEN_CLASS);
+        }
+    }
+    if (!enabled) return false;
+    let found = false;
+    for (const el of row.querySelectorAll?.(GIF_MEDIA_SELECTOR) || []) {
+        if (!isGifMediaElement(el)) continue;
+        // GIFs in a quoted reply preview, reactions and avatars are not media
+        // belonging to the current message.
+        if (el.closest?.('[class*="repliedMessage"], [class*="reaction"], [class*="avatar"]')) continue;
+        const wrapper = gifContainer(el, row);
+        wrapper.classList.add(GIF_HIDDEN_CLASS);
+        found = true;
+    }
+    return found;
+}
+
+function hideStickerAccessoryByRecord(row, message) {
+    // The accessories area can be removed as a whole only when there is no
+    // attachment/embed/poll competing for that area. Message text stays visible.
+    const shouldHide = hasStickers(message)
+        && !hasUnfilteredMedia(message, { ...Settings.current, hideStickers: true });
+    const accessories = row.querySelector?.(
+        '[id^="message-accessories-"], [class*="messageAccessories"], [class*="accessories_"]'
+    );
+    accessories?.classList.toggle(STICKER_ACCESSORY_CLASS, shouldHide);
+    return Boolean(accessories && shouldHide);
+}
+
+function isStickerElement(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (el.matches?.(STICKER_ELEMENT_SELECTORS)) return true;
+    const src = el.getAttribute?.("src") || "";
+    if (/\/stickers\/\d+/i.test(src)) return true;
+    const label = el.getAttribute?.("aria-label") || "";
+    if (/(?:sticker|стикер)/i.test(label) && (el.tagName === "CANVAS" || el.tagName === "IMG" || el.getAttribute?.("role") === "img")) return true;
+    return false;
+}
+
+function rowHasVisibleNonStickerContent(row) {
+    if (!row) return false;
+    const textEl = row.querySelector?.('[id^="message-content-"], [class*="messageContent"]');
+    if (textEl && textEl.textContent?.trim()) return true;
+
+    const nonStickerMedia = row.querySelectorAll?.(
+        '[class*="embedWrapper_"], [class*="attachment_"], [class*="mosaicItem_"], [class*="mediaAttachmentsContainer_"], [class*="pollContainer_"], [class*="audioPlayer_"]'
+    );
+    if (nonStickerMedia && nonStickerMedia.length > 0) return true;
+
+    return false;
 }
 
 function rowMessageId(row) {
@@ -595,15 +822,87 @@ function rowMessageId(row) {
 
 function reconcileStickerRows(root = document) {
     if (!root?.querySelectorAll) return;
-    const enabled = Settings.current.hideStickers !== false && scopeEnabled();
-    const selector = 'li[id^="chat-messages-"], [data-list-item-id^="chat-messages"]';
+    const inScope = scopeEnabled();
+    const enabled = Settings.current.hideStickers !== false && inScope;
+    const gifEnabled = Settings.current.hideGifs !== false && inScope;
     const rows = [];
-    if (root.matches?.(selector)) rows.push(root);
-    for (const row of root.querySelectorAll(selector)) rows.push(row);
+    if (root.matches?.(MEDIA_ROW_SELECTOR)) rows.push(root);
+    for (const row of root.querySelectorAll(MEDIA_ROW_SELECTOR)) rows.push(row);
+
     for (const row of rows) {
         const id = rowMessageId(row);
-        row.classList.toggle(STICKER_ROW_CLASS, Boolean(enabled && id && stickerOnlyIds.has(id)));
+        const message = (enabled || gifEnabled) ? messageForRow(row) : null;
+        if (enabled && id && message) {
+            if (hasStickers(message) && !messageHasNonStickerPayload(message)) stickerOnlyIds.add(id);
+            else stickerOnlyIds.delete(id);
+        }
+        const isKnownStickerOnly = enabled && Boolean(id && stickerOnlyIds.has(id));
+
+        const hasGifDOM = reconcileGifMedia(row, gifEnabled);
+        const hideGifRow = gifEnabled && (gifOnlyMessage(message, Settings.current)
+            || (hasGifDOM && !message && !rowHasVisibleNonStickerContent(row)
+                && !row.querySelector?.('[class*="messageContent"]')));
+
+        if (!enabled) {
+            row.classList.remove(STICKER_ROW_CLASS);
+            const hidden = row.querySelectorAll?.("." + STICKER_HIDDEN_CLASS);
+            if (hidden) {
+                for (const el of hidden) el.classList.remove(STICKER_HIDDEN_CLASS);
+            }
+            row.querySelectorAll?.("." + STICKER_ACCESSORY_CLASS).forEach((el) => el.classList.remove(STICKER_ACCESSORY_CLASS));
+            row.classList.toggle(STICKER_ROW_CLASS, Boolean(hideGifRow));
+            continue;
+        }
+
+        const stickerEls = [];
+        if (row.matches?.(STICKER_ELEMENT_SELECTORS) && isStickerElement(row)) {
+            stickerEls.push(row);
+        }
+        for (const el of row.querySelectorAll(STICKER_ELEMENT_SELECTORS)) {
+            if (isStickerElement(el)) stickerEls.push(el);
+        }
+
+        const hasStickersInDOM = stickerEls.length > 0;
+        if (hasStickersInDOM) {
+            for (const el of stickerEls) {
+                el.classList.add(STICKER_HIDDEN_CLASS);
+            }
+        }
+
+        hideStickerAccessoryByRecord(row, message);
+
+        const hasNonSticker = rowHasVisibleNonStickerContent(row);
+        const shouldHideRow = isKnownStickerOnly || hideGifRow || (hasStickersInDOM && !hasNonSticker);
+
+        row.classList.toggle(STICKER_ROW_CLASS, shouldHideRow);
     }
+}
+
+function queueMediaReconcile(root) {
+    if (!stickerObserver || !root) return;
+    const row = root.closest?.(MEDIA_ROW_SELECTOR);
+    if (row) queuedMediaRows.add(row);
+    else if (root.matches?.(MEDIA_ROW_SELECTOR)) queuedMediaRows.add(root);
+    else if (root.querySelector?.(MEDIA_ROW_SELECTOR)) queuedMediaRows.add(root);
+    else return;
+    if (mediaReconcileQueued) return;
+    mediaReconcileQueued = true;
+    queueMicrotask(() => {
+        mediaReconcileQueued = false;
+        const pending = queuedMediaRows;
+        queuedMediaRows = new Set();
+        if (!stickerObserver) return;
+        for (const node of pending) if (node.isConnected) reconcileStickerRows(node);
+    });
+}
+
+function queueFullMediaReconcile() {
+    if (fullMediaReconcileQueued) return;
+    fullMediaReconcileQueued = true;
+    queueMicrotask(() => {
+        fullMediaReconcileQueued = false;
+        if (stickerObserver) reconcileStickerRows(document);
+    });
 }
 
 function startStickerObserver() {
@@ -612,26 +911,71 @@ function startStickerObserver() {
     if (!host) return;
     stickerObserver = new MutationObserver((records) => {
         for (const record of records) {
-            for (const node of record.addedNodes || []) if (node?.nodeType === 1) reconcileStickerRows(node);
+            if (record.type === "attributes") {
+                // Ignore our own hide/show marker mutations (avoids loops).
+                if (record.attributeName === "class") {
+                    const withoutMarkers = (value) => String(value || "").replace(
+                        /\bvac34-mf-(?:sticker-empty-row|sticker-hidden|sticker-accessory-hidden|gif-hidden)\b/g, ""
+                    ).replace(/\s+/g, " ").trim();
+                    if (withoutMarkers(record.oldValue) === withoutMarkers(record.target.className)) continue;
+                }
+                queueMediaReconcile(record.target);
+            } else {
+                for (const node of record.addedNodes || []) {
+                    if (node?.nodeType === 1) queueMediaReconcile(node);
+                }
+            }
         }
     });
-    stickerObserver.observe(host, { childList: true, subtree: true });
+    stickerObserver.observe(host, {
+        childList: true, subtree: true, attributes: true, attributeOldValue: true,
+        attributeFilter: ["src", "srcset", "data-src", "poster", "class", "data-type", "data-sticker-id", "aria-label", "data-list-item-id"],
+    });
     reconcileStickerRows(document);
 }
 
 function stopStickerObserver() {
     stickerObserver?.disconnect?.();
     stickerObserver = null;
+    mediaReconcileQueued = false;
+    fullMediaReconcileQueued = false;
+    queuedMediaRows.clear();
     stickerOnlyIds.clear();
     document.querySelectorAll("." + STICKER_ROW_CLASS).forEach((row) => row.classList.remove(STICKER_ROW_CLASS));
+    document.querySelectorAll("." + STICKER_HIDDEN_CLASS).forEach((el) => el.classList.remove(STICKER_HIDDEN_CLASS));
+    document.querySelectorAll("." + STICKER_ACCESSORY_CLASS).forEach((el) => el.classList.remove(STICKER_ACCESSORY_CLASS));
+    document.querySelectorAll("." + GIF_HIDDEN_CLASS).forEach((el) => el.classList.remove(GIF_HIDDEN_CLASS));
 }
 
 function syncGlobalFlags() {
     const root = document.documentElement;
     if (!root) return;
-    root.toggleAttribute("data-vac34-mf-gifs", Settings.current.hideGifs !== false);
-    root.toggleAttribute("data-vac34-mf-stickers", Settings.current.hideStickers !== false);
+    const inScope = scopeEnabled();
+    root.toggleAttribute("data-vac34-mf-gifs", inScope && Settings.current.hideGifs !== false);
+    root.toggleAttribute("data-vac34-mf-stickers", inScope && Settings.current.hideStickers !== false);
     reconcileStickerRows(document);
+}
+
+function attachStoreListeners() {
+    if (storeListenersAttached) return;
+    try {
+        const guildStore = BdApi.Webpack.getStore?.("SelectedGuildStore") || BdApi.Webpack.Stores?.SelectedGuildStore;
+        const channelStore = BdApi.Webpack.getStore?.("SelectedChannelStore") || BdApi.Webpack.Stores?.SelectedChannelStore;
+        guildStore?.addChangeListener?.(syncGlobalFlags);
+        channelStore?.addChangeListener?.(syncGlobalFlags);
+        storeListenersAttached = true;
+    } catch {}
+}
+
+function detachStoreListeners() {
+    if (!storeListenersAttached) return;
+    try {
+        const guildStore = BdApi.Webpack.getStore?.("SelectedGuildStore") || BdApi.Webpack.Stores?.SelectedGuildStore;
+        const channelStore = BdApi.Webpack.getStore?.("SelectedChannelStore") || BdApi.Webpack.Stores?.SelectedChannelStore;
+        guildStore?.removeChangeListener?.(syncGlobalFlags);
+        channelStore?.removeChangeListener?.(syncGlobalFlags);
+    } catch {}
+    storeListenersAttached = false;
 }
 
 const MediaShell = ({ children, kind }) => {
@@ -728,6 +1072,9 @@ const css = `
 .vac34-mf-shown > .vac34-mf-toggle:hover { opacity: 1; }
 .vac34-mf-hide-embed-link { display: none !important; }
 .${STICKER_ROW_CLASS} { display: none !important; }
+.${STICKER_HIDDEN_CLASS} { display: none !important; }
+html[data-vac34-mf-stickers] .${STICKER_ACCESSORY_CLASS} { display: none !important; }
+html[data-vac34-mf-gifs] .${GIF_HIDDEN_CLASS} { display: none !important; }
 html[data-vac34-mf-gifs] button[aria-label="gif" i],
 html[data-vac34-mf-gifs] button[aria-label*="gif picker" i],
 html[data-vac34-mf-gifs] button[aria-label*="гиф" i],
@@ -738,50 +1085,123 @@ html[data-vac34-mf-stickers] button[aria-label*="sticker" i],
 html[data-vac34-mf-stickers] button[aria-label*="стикер" i],
 html[data-vac34-mf-stickers] [role="tab"][aria-controls*="sticker" i],
 html[data-vac34-mf-stickers] [aria-controls$="sticker-picker"],
-html[data-vac34-mf-stickers] [id$="-sticker-picker"] { display: none !important; }
+html[data-vac34-mf-stickers] [id$="-sticker-picker"],
+html[data-vac34-mf-stickers] [class*="stickerSuggestion"],
+html[data-vac34-mf-stickers] [class*="stickersPopout"],
+html[data-vac34-mf-stickers] [class*="stickerPicker"],
+html[data-vac34-mf-stickers] [class*="stickerResults_"] { display: none !important; }
+html[data-vac34-mf-stickers] .vac34-mf-sticker-hidden,
+html[data-vac34-mf-stickers] [class*="stickerNode"],
+html[data-vac34-mf-stickers] [class*="messageSticker"],
+html[data-vac34-mf-stickers] [class*="clickableSticker"],
+html[data-vac34-mf-stickers] [class*="stickerWrapper"],
+html[data-vac34-mf-stickers] [class*="stickerContainer"],
+html[data-vac34-mf-stickers] [class*="stickers_"],
+html[data-vac34-mf-stickers] [data-type="sticker"],
+html[data-vac34-mf-stickers] [data-sticker-id],
+html[data-vac34-mf-stickers] img[src*="/stickers/"],
+html[data-vac34-mf-stickers] canvas[data-type="sticker"],
+html[data-vac34-mf-stickers] [class*="assetWrapper_"][class*="sticker"],
+html[data-vac34-mf-stickers] [class*="lottieCanvas"][aria-label*="sticker" i],
+html[data-vac34-mf-stickers] [class*="lottieCanvas"][aria-label*="стикер" i] { display: none !important; }
 `;
 
 const index = createPlugin({
     start() {
         syncGlobalFlags();
         Settings.addListener(syncGlobalFlags);
+        attachStoreListeners();
         startStickerObserver();
 
+        const patchMessageAccessories = (mod) => {
+            if (!mod) return;
+            const proto = mod.prototype;
+            if (proto?.render) {
+                BdApi.Patcher.instead(getMeta().name, proto, "render", (instance, args, original) => {
+                    if (!scopeEnabled() || Settings.current.hideStickers === false) return original.apply(instance, args);
+                    const originalProps = instance?.props;
+                    const message = originalProps?.message;
+                    const ids = stickerIdsFromMessage(message);
+
+                    const id = message?.id != null ? String(message.id) : "";
+                    if (id && ids.size > 0) {
+                        if (messageHasNonStickerPayload(message)) stickerOnlyIds.delete(id);
+                        else stickerOnlyIds.add(id);
+                    }
+
+                    try {
+                        instance.props = Object.assign({}, originalProps, { message: messageWithoutStickers(message) });
+                        const result = original.apply(instance, args);
+                        queueFullMediaReconcile();
+                        return pruneStickerReactTree(result, ids);
+                    }
+                    catch (error) {
+                        warn("Sticker pre-render suppression degraded: " + (error?.message || error));
+                        let result;
+                        try { result = original.apply(instance, args); } catch { return null; }
+                        return pruneStickerReactTree(result, ids);
+                    }
+                    finally {
+                        if (instance) instance.props = originalProps;
+                    }
+                });
+            }
+            else {
+                const targetKey = typeof mod === "object"
+                    ? Object.entries(mod).find(([, val]) => typeof val === "function" && (String(val).includes("attachmentToDelete") || String(val).includes("renderAccessories")))?.[0]
+                    : null;
+                if (targetKey && typeof mod[targetKey] === "function") {
+                    after(mod, targetKey, ({ args, result }) => {
+                        if (!scopeEnabled() || Settings.current.hideStickers === false || !result) return result;
+                        const message = args?.[0]?.message;
+                        const ids = stickerIdsFromMessage(message);
+                        const id = message?.id != null ? String(message.id) : "";
+                        if (id && ids.size > 0) {
+                            if (messageHasNonStickerPayload(message)) stickerOnlyIds.delete(id);
+                            else stickerOnlyIds.add(id);
+                        }
+                        queueFullMediaReconcile();
+                        return pruneStickerReactTree(result, ids);
+                    }, { name: "MessageAccessories functional render" });
+                }
+            }
+        };
+
         const MessageAccessories = findMessageAccessoriesModule();
-        if (MessageAccessories?.prototype?.render) {
-            BdApi.Patcher.instead(getMeta().name, MessageAccessories.prototype, "render", (instance, args, original) => {
-                if (!scopeEnabled() || Settings.current.hideStickers === false) return original.apply(instance, args);
-                const originalProps = instance?.props;
-                const message = originalProps?.message;
-                const ids = stickerIdsFromMessage(message);
-                if (ids.size === 0) return original.apply(instance, args);
-
-                const id = message?.id != null ? String(message.id) : "";
-                if (id) {
-                    if (messageHasNonStickerPayload(message)) stickerOnlyIds.delete(id);
-                    else stickerOnlyIds.add(id);
-                }
-
-                try {
-                    instance.props = Object.assign({}, originalProps, { message: messageWithoutStickers(message) });
-                    const result = original.apply(instance, args);
-                    queueMicrotask(() => reconcileStickerRows(document));
-                    return result;
-                }
-                catch (error) {
-                    warn("Sticker pre-render suppression degraded: " + (error?.message || error));
-                    let result;
-                    try { result = original.apply(instance, args); } catch { return null; }
-                    return pruneStickerReactTree(result, ids);
-                }
-                finally {
-                    if (instance) instance.props = originalProps;
-                }
-            });
+        if (MessageAccessories) {
+            patchMessageAccessories(MessageAccessories);
         }
         else {
-            warn("Message accessories renderer not found; sticker suppression is degraded");
+            warn("Message accessories renderer not found; falling back to alternative hooks & DOM guard");
         }
+
+        try {
+            const altAccessories = BdApi.Webpack.getModule(
+                (m) => checkObjectValues(m) && Object.values(m).some((val) => typeof val === "function" && String(val).includes("renderAccessories") && String(val).includes("message")),
+                { searchExports: false }
+            );
+            if (altAccessories && altAccessories !== MessageAccessories) {
+                patchMessageAccessories(altAccessories);
+            }
+        }
+        catch {}
+
+        try {
+            const stickerModule = BdApi.Webpack.getModule(
+                (m) => checkObjectValues(m) && Object.values(m).some((val) => typeof val === "function" && (String(val).includes("renderStickers") || String(val).includes("renderSticker"))),
+                { searchExports: false }
+            );
+            if (stickerModule) {
+                const key = Object.entries(stickerModule).find(([, fn]) => typeof fn === "function" && (String(fn).includes("renderStickers") || String(fn).includes("renderSticker")))?.[0];
+                if (key) {
+                    BdApi.Patcher.instead(getMeta().name, stickerModule, key, (instance, args, original) => {
+                        if (scopeEnabled() && Settings.current.hideStickers !== false) return null;
+                        return original.apply(instance, args);
+                    });
+                }
+            }
+        }
+        catch {}
 
         if (Embed?.prototype?.render) {
             after(Embed.prototype, "render", ({ result, context }) => {
@@ -846,6 +1266,7 @@ const index = createPlugin({
     },
     stop() {
         Settings.removeListener(syncGlobalFlags);
+        detachStoreListeners();
         stopStickerObserver();
         document.documentElement?.removeAttribute("data-vac34-mf-gifs");
         document.documentElement?.removeAttribute("data-vac34-mf-stickers");

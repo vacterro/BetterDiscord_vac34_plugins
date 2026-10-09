@@ -4,7 +4,7 @@
   "private": true,
   "description": "BetterDiscord plugins for media filtering, emoji remapping, and silent typing.",
   "scripts": {
-    "check": "node --check MediaFilter.plugin.js && node --check GoodEmoji.plugin.js && node --check SilentTyping.plugin.js"
+    "check": "node --check MediaFilter.plugin.js && node --check GoodEmoji.plugin.js && node --check SilentTyping.plugin.js && node --test tests/*.test.js"
   },
   "license": "MIT"
 }
