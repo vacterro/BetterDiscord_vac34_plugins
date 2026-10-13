@@ -10,6 +10,8 @@ class FakeElement {
     constructor(kind, attrs = {}, children = [], text = '') {
         this.kind = kind;
         this.nodeType = 1;
+        this.tagName = kind === 'regular-img' || kind === 'gif-img' || kind === 'avatar-img' || kind === 'emoji-img' ? 'IMG' : kind === 'video' ? 'VIDEO' : kind === 'source' ? 'SOURCE' : 'DIV';
+        this.events = {};
         this.attrs = { ...attrs };
         this.id = attrs.id || '';
         this.children = children;
@@ -17,20 +19,53 @@ class FakeElement {
         this.isConnected = true;
         const classes = new Set((attrs.class || '').split(' ').filter(Boolean));
         this.classList = {
-            add: (value) => classes.add(value),
-            remove: (value) => classes.delete(value),
+            add: (...values) => values.forEach((value) => classes.add(value)),
+            remove: (...values) => values.forEach((value) => classes.delete(value)),
             contains: (value) => classes.has(value),
             toggle: (value, force) => {
                 if (force ?? !classes.has(value)) classes.add(value);
                 else classes.delete(value);
             },
         };
+        Object.defineProperty(this, 'className', {
+            get: () => [...classes].join(' '),
+            set: (value) => { classes.clear(); String(value).split(/\s+/).filter(Boolean).forEach((name) => classes.add(name)); },
+        });
         for (const child of children) child.parentElement = this;
     }
     getAttribute(name) { return this.attrs[name] ?? null; }
+    setAttribute(name, value) { this.attrs[name] = value; }
+    addEventListener(name, callback) { this.events[name] = callback; }
+    click() { this.events.click?.({ preventDefault() {}, stopPropagation() {} }); }
+    remove() {
+        if (!this.parentElement) return;
+        this.parentElement.children.splice(this.parentElement.children.indexOf(this), 1);
+        this.parentElement = null;
+        this.isConnected = false;
+    }
+    get previousElementSibling() {
+        if (!this.parentElement) return null;
+        const siblings = this.parentElement.children;
+        return siblings[siblings.indexOf(this) - 1] || null;
+    }
+    insertAdjacentElement(where, other) {
+        assert.equal(where, 'afterend');
+        other.remove();
+        const siblings = this.parentElement.children;
+        siblings.splice(siblings.indexOf(this) + 1, 0, other);
+        other.parentElement = this.parentElement;
+        other.isConnected = true;
+    }
     matches(selector) {
         if (selector.includes('chat-messages-') && this.kind === 'row') return true;
         if (selector.includes('stickerNode') && this.kind === 'sticker') return true;
+        if (selector.includes('mediaContainer') && this.kind === 'media-wrapper') return true;
+        if (selector.includes('message-accessories') && this.kind === 'accessories') return true;
+        if (selector.includes('avatar') && this.kind === 'avatar') return true;
+        if (selector.includes('emoji') && this.kind === 'emoji') return true;
+        if (selector.includes('reaction') && this.kind === 'reaction') return true;
+        if (selector.includes('repliedMessage') && this.kind === 'replied') return true;
+        if (selector.startsWith('.') && this.classList.contains(selector.slice(1))) return true;
         return false;
     }
     contains(el) { return this === el || this.children.some((child) => child.contains(el)); }
@@ -38,9 +73,18 @@ class FakeElement {
         if (selector.includes('chat-messages-')) {
             for (let node = this; node; node = node.parentElement) if (node.kind === 'row') return node;
         }
-        if (selector.includes('avatar') || selector.includes('repliedMessage')) return null;
-        if (selector.includes('embedWrapper') || selector.includes('visualMediaItem')) {
-            for (let node = this; node; node = node.parentElement) if (node.kind === 'gif-wrapper') return node;
+        if (selector.includes('mediaContainer') || selector.includes('visualMediaItem') || selector.includes('embedWrapper')) {
+            for (let node = this; node; node = node.parentElement) {
+                if (node.kind === 'gif-wrapper' || node.kind === 'media-wrapper') return node;
+            }
+        }
+        if (selector.includes('avatar') || selector.includes('repliedMessage') || selector.includes('reaction') || selector.includes('emoji')) {
+            for (let node = this; node; node = node.parentElement) {
+                if (['avatar', 'replied', 'reaction', 'emoji'].includes(node.kind)) return node;
+            }
+        }
+        if (selector.startsWith('.')) {
+            for (let node = this; node; node = node.parentElement) if (node.classList.contains(selector.slice(1))) return node;
         }
         return null;
     }
@@ -53,7 +97,7 @@ class FakeElement {
             return all.filter((el) => el.classList.contains(selector.slice(1)));
         }
         if (selector.includes('img[src]') || selector.includes('video[src]')) {
-            return all.filter((el) => el.kind === 'gif-img' || el.kind === 'regular-img');
+            return all.filter((el) => ['gif-img', 'regular-img', 'avatar-img', 'emoji-img', 'video', 'source'].includes(el.kind));
         }
         if (selector.includes('stickerNode')) return all.filter((el) => el.kind === 'sticker');
         if (selector.includes('message-accessories-')) return all.filter((el) => el.kind === 'accessories');
@@ -80,11 +124,12 @@ function fixture() {
     };
     const source = fs.readFileSync(path.join(__dirname, '..', 'MediaFilter.plugin.js'), 'utf8');
     const context = vm.createContext({
-        BdApi: api, module: { exports: {} }, console, URL, window: {}, document: {},
+        BdApi: api, module: { exports: {} }, console, URL, window: {},
+        document: { createElement: () => new FakeElement('toggle') },
         AbortController, queueMicrotask,
     });
-    const exposed = vm.runInContext(source + '\n({ Settings, isGifAttachment, isGifEmbed, isGifMediaElement, gifOnlyMessage, reconcileStickerRows, messageForRow });', context);
-    return { ...exposed, messages };
+    const exposed = vm.runInContext(source + '\n({ Settings, isGifAttachment, isGifEmbed, isGifMediaElement, gifOnlyMessage, reconcileStickerRows, messageForRow, clearDomMediaFallback });', context);
+    return { ...exposed, messages, stores };
 }
 
 const messageId = '123456789012345678';
@@ -192,4 +237,145 @@ test('media virtualization updates GIF hiding when src changes without replacing
     media.attrs.src = 'https://cdn.discordapp.com/attachments/photo.png';
     f.reconcileStickerRows(item);
     assert.equal(wrapper.classList.contains('vac34-mf-gif-hidden'), false);
+});
+
+
+test('ordinary Discord attachment is collapsed with an accessible inline Show/Hide fallback', () => {
+    const f = fixture();
+    f.messages.set(messageId, { id: messageId, content: 'caption', attachments: [{ filename: 'meme.png' }] });
+    const image = new FakeElement('regular-img', { src: 'https://cdn.discordapp.com/attachments/123/456/meme.png' });
+    const media = new FakeElement('media-wrapper', {}, [image]);
+    const item = row(new FakeElement('content', {}, [], 'caption'), media);
+    f.reconcileStickerRows(item);
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), true);
+    const button = item.querySelector('.vac34-mf-dom-media-toggle');
+    assert.ok(button, 'fallback control must be mounted outside the image wrapper');
+    assert.equal(button.textContent, 'Show');
+    button.click();
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), false);
+    assert.equal(button.textContent, 'Hide');
+    f.reconcileStickerRows(item);
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), false, 'reconcile must preserve reveal state');
+    assert.equal(item.querySelectorAll('.vac34-mf-dom-media-toggle').length, 1);
+    button.click();
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), true);
+});
+
+test('sticker-only record still removes entire row rather than exposing the sticker with Show', () => {
+    const f = fixture();
+    f.messages.set(messageId, stickerMessage);
+    const media = new FakeElement('media-wrapper', {}, [new FakeElement('regular-img', { src: 'blob:sticker' })]);
+    const item = row(new FakeElement('accessories', {}, [media]));
+    f.reconcileStickerRows(item);
+    assert.equal(item.classList.contains('vac34-mf-sticker-empty-row'), true);
+    assert.equal(item.querySelectorAll('.vac34-mf-dom-media-toggle').length, 0);
+});
+
+test('avatars and inline emoji are never collapsed by media fallback', () => {
+    const f = fixture();
+    const avatar = new FakeElement('avatar', {}, [new FakeElement('avatar-img', { src: 'https://cdn.discordapp.com/avatars/11/abc.png' })]);
+    const emoji = new FakeElement('emoji', {}, [new FakeElement('emoji-img', { src: 'https://cdn.discordapp.com/emojis/22.png' })]);
+    const item = row(avatar, new FakeElement('content', {}, [emoji], 'Hello'));
+    f.reconcileStickerRows(item);
+    assert.equal(item.querySelectorAll('.vac34-mf-dom-media-toggle').length, 0);
+});
+
+test('when collapsing is disabled all DOM fallback markers and controls are removed', () => {
+    const f = fixture();
+    const media = new FakeElement('media-wrapper', {}, [new FakeElement('regular-img', { src: 'https://cdn.discordapp.com/attachments/1/2/a.png' })]);
+    const item = row(media);
+    f.reconcileStickerRows(item);
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), true);
+    f.Settings.current.collapseMedia = false;
+    f.reconcileStickerRows(item);
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), false);
+    assert.equal(item.querySelectorAll('.vac34-mf-dom-media-toggle').length, 0);
+});
+
+test('media DOM fallback drops stale button on virtualized media replacement', () => {
+    const f = fixture();
+    const media = new FakeElement('media-wrapper', {}, [new FakeElement('regular-img', { src: 'https://cdn.discordapp.com/attachments/1/2/a.png' })]);
+    const item = row(media);
+    f.reconcileStickerRows(item);
+    const previous = item.querySelector('.vac34-mf-dom-media-toggle');
+    media.children = [];
+    f.reconcileStickerRows(item);
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), false);
+    assert.equal(item.querySelector('.vac34-mf-dom-media-toggle'), null);
+    assert.equal(previous.isConnected, false);
+});
+
+test('source URL does not itself turn an unwrapped inline emoji into an attachment', () => {
+    const f = fixture();
+    const item = row(new FakeElement('content', {}, [new FakeElement('emoji-img', { src: 'https://cdn.discordapp.com/emojis/123.png' })]));
+    f.reconcileStickerRows(item);
+    assert.equal(item.querySelectorAll('.vac34-mf-dom-media-toggle').length, 0);
+});
+
+test('bare attachment CDN image gets a control without hiding adjacent text or links', () => {
+    const f = fixture();
+    const content = new FakeElement('content', {}, [], 'This is important');
+    const image = new FakeElement('regular-img', { src: 'https://cdn.discordapp.com/attachments/123/456/photo.jpg' });
+    const accessories = new FakeElement('accessories', {}, [image]);
+    const item = row(content, accessories);
+    f.reconcileStickerRows(item);
+    assert.equal(image.classList.contains('vac34-mf-dom-media-hidden'), true);
+    assert.equal(accessories.classList.contains('vac34-mf-dom-media-hidden'), false);
+    assert.equal(content.textContent, 'This is important');
+    assert.ok(item.querySelector('.vac34-mf-dom-media-toggle'));
+});
+
+test('GIFs do not become revealable through the image fallback', () => {
+    const f = fixture();
+    const gif = new FakeElement('gif-img', { src: 'https://media.tenor.com/id/tenor.webp' });
+    const wrapper = new FakeElement('gif-wrapper', {}, [gif]);
+    const item = row(wrapper);
+    f.reconcileStickerRows(item);
+    assert.equal(wrapper.classList.contains('vac34-mf-gif-hidden'), true);
+    assert.equal(item.querySelector('.vac34-mf-dom-media-toggle'), null);
+});
+
+test('React-wrapped media is not double-collapsed by the DOM fallback', () => {
+    const f = fixture();
+    const media = new FakeElement('media-wrapper', {}, [new FakeElement('regular-img', { src: 'https://cdn.discordapp.com/attachments/1/2/a.png' })]);
+    const shell = new FakeElement('media-shell', { class: 'vac34-mf-shell' }, [media]);
+    const item = row(shell);
+    f.reconcileStickerRows(item);
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), false);
+    assert.equal(item.querySelector('.vac34-mf-dom-media-toggle'), null);
+});
+
+test('a row channel snowflake takes precedence over the selected channel', () => {
+    const f = fixture();
+    const channel = '222222222222222222';
+    const item = new FakeElement('row', { id: 'chat-messages-' + channel + '-' + messageId });
+    const channels = [];
+    const msg = { id: messageId, content: 'from another channel' };
+    f.stores.MessageStore.getMessage = (channelId, id) => {
+        channels.push(channelId);
+        return id === messageId && channelId === channel ? msg : null;
+    };
+    assert.equal(f.messageForRow(item), msg);
+    assert.deepEqual(channels, [channel]);
+});
+
+test('reconciliation creates no additional fallback buttons on repeated runs', () => {
+    const f = fixture();
+    const item = row(new FakeElement('media-wrapper', {}, [new FakeElement('regular-img', { src: 'https://cdn.discordapp.com/attachments/1/2/a.png' })]));
+    for (let i = 0; i < 30; ++i) f.reconcileStickerRows(item);
+    assert.equal(item.querySelectorAll('.vac34-mf-dom-media-toggle').length, 1);
+});
+
+
+test('opaque GIF embed with text suppresses accessories without deleting the text', () => {
+    const f = fixture();
+    f.messages.set(messageId, { id: messageId, content: 'caption', embeds: [{ type: 'gifv', url: 'https://tenor.com/view/123' }] });
+    const content = new FakeElement('content', {}, [], 'caption');
+    const media = new FakeElement('media-wrapper', {}, [new FakeElement('regular-img', { src: 'blob:opaque' })]);
+    const accessory = new FakeElement('accessories', {}, [media]);
+    const item = row(content, accessory);
+    f.reconcileStickerRows(item);
+    assert.equal(accessory.classList.contains('vac34-mf-gif-hidden'), true);
+    assert.equal(item.querySelector('.vac34-mf-dom-media-toggle'), null);
+    assert.equal(content.textContent, 'caption');
 });
