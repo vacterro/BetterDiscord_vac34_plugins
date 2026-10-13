@@ -1,5 +1,15 @@
 # Changelog
 
+## MediaFilter 1.0.3
+
+- Add a reversible DOM media-collapse fallback for images and videos when Discord's private React media renderer cannot be intercepted. User-visible inline Show/Hide preserves captions, avatars, inline emoji and unrelated attachments.
+- Preserve sticker-only removal and independent GIF suppression; do not expose confirmed sticker-only messages with media reveal buttons.
+- Restore fallback controls on message virtualization and remove all plugin-owned DOM elements on stop or setting changes.
+- Resolve MessageStore metadata using the row's encoded channel snowflake where available, avoiding selected-channel drift during navigation.
+- Suppress GIF-only accessory content even when Discord supplies opaque media URLs, including when the message contains text.
+- Expand offline coverage to 19 focused tests, including repeated reconciliation and scope-sensitive DOM fallback behavior.
+- Live Discord client verification is still required after installation.
+
 ## MediaFilter 1.0.2
 
 - Resolve sticker-only messages through Discord's MessageStore when render hooks miss a sticker or Discord changes markup.
