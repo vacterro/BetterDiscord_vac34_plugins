@@ -1,6 +1,6 @@
 /**
  * @name MediaFilter
- * @version 1.0.2
+ * @version 1.0.3
  * @author vacterro
  * @description Collapses images, videos and embeds with inline reveal, removes GIFs and stickers, and supports per-server scope.
  * @source https://github.com/vacterro/BetterDiscord_vac34_plugins/blob/main/MediaFilter.plugin.js
@@ -483,6 +483,18 @@ const STICKER_ROW_CLASS = "vac34-mf-sticker-empty-row";
 const STICKER_HIDDEN_CLASS = "vac34-mf-sticker-hidden";
 const STICKER_ACCESSORY_CLASS = "vac34-mf-sticker-accessory-hidden";
 const GIF_HIDDEN_CLASS = "vac34-mf-gif-hidden";
+const DOM_MEDIA_HIDDEN_CLASS = "vac34-mf-dom-media-hidden";
+const DOM_MEDIA_TARGET_CLASS = "vac34-mf-dom-media-target";
+const DOM_MEDIA_BUTTON_CLASS = "vac34-mf-dom-media-toggle";
+// DOM fallback is intentionally limited to actual media inside a chat message.
+// Discord can change its React render entry points without changing attachment markup.
+const DOM_MEDIA_LEAVES = 'img[src], img[srcset], img[data-src], video[src], video[poster], video source[src]';
+const DOM_MEDIA_BOUNDARIES = [
+    '[class*="imageWrapper"]', '[class*="videoContainer"]', '[class*="visualMediaItem"]',
+    '[class*="mosaicItem"]', '[class*="mediaContainer"]', '[class*="attachmentContainer"]',
+    '[class*="embedWrapper"]', '[class*="embedMedia"]', '[class*="clickableWrapper"]',
+].join(', ');
+const domMediaButtons = new WeakMap();
 const MEDIA_ROW_SELECTOR = 'li[id^="chat-messages-"], [data-list-item-id^="chat-messages"], [class*="messageListItem"]';
 const stickerOnlyIds = new Set();
 let stickerObserver = null;
@@ -500,7 +512,11 @@ function messageForRow(row) {
         const stores = BdApi.Webpack.Stores;
         const messageStore = BdApi.Webpack.getStore?.("MessageStore") || stores?.MessageStore;
         const channelStore = BdApi.Webpack.getStore?.("SelectedChannelStore") || stores?.SelectedChannelStore;
-        const channelId = channelStore?.getChannelId?.();
+        // During navigation, a virtualized row can belong to a different channel
+        // from SelectedChannelStore. Prefer the identity encoded in its DOM ID.
+        const rowChannelId = String(row.id || row.getAttribute("data-list-item-id") || "")
+            .match(/chat-messages-(\d{15,})-\d{15,}(?:$|\b)/)?.[1];
+        const channelId = rowChannelId || channelStore?.getChannelId?.();
         if (!channelId || !messageStore) return null;
         return messageStore.getMessage?.(channelId, id)
             || messageStore.getMessages?.(channelId)?.get?.(id)
@@ -788,6 +804,18 @@ function hideStickerAccessoryByRecord(row, message) {
     return Boolean(accessories && shouldHide);
 }
 
+function hideGifAccessoryByRecord(row, message) {
+    const accessories = row.querySelector?.(
+        '[id^="message-accessories-"], [class*="messageAccessories"], [class*="accessories_"]'
+    );
+    if (!accessories) return;
+    const hasGif = (Array.isArray(message?.attachments) && message.attachments.some(isGifAttachment))
+        || (Array.isArray(message?.embeds) && message.embeds.some(isGifEmbed));
+    const shouldHide = Settings.current.hideGifs !== false && hasGif
+        && !hasUnfilteredMedia(message, Settings.current);
+    accessories.classList.toggle(GIF_HIDDEN_CLASS, Boolean(shouldHide));
+}
+
 function isStickerElement(el) {
     if (!el || el.nodeType !== 1) return false;
     if (el.matches?.(STICKER_ELEMENT_SELECTORS)) return true;
@@ -796,6 +824,106 @@ function isStickerElement(el) {
     const label = el.getAttribute?.("aria-label") || "";
     if (/(?:sticker|стикер)/i.test(label) && (el.tagName === "CANVAS" || el.tagName === "IMG" || el.getAttribute?.("role") === "img")) return true;
     return false;
+}
+
+// Identify images and videos by where they occur, not by an image's filename.
+// A PNG posted as a meme can look like a sticker while actually being a normal
+// Discord attachment. The sticker-only suppression and regular media collapsing
+// must therefore remain separate operations.
+function isFallbackMediaLeaf(el, row) {
+    if (!el?.getAttribute || !row?.contains?.(el)) return false;
+    if (el.closest?.('[class*="avatar"], [class*="repliedMessage"], [class*="reaction"], [class*="emoji"], [class*="member"], [data-vac34-plugin-ui]')) return false;
+    if (el.closest?.('.vac34-mf-shell')) return false;
+    if (el.closest?.('.' + STICKER_HIDDEN_CLASS) || isStickerElement(el)) return false;
+    const src = ['src', 'srcset', 'poster', 'data-src'].map((attr) => el.getAttribute(attr) || '').join(' ');
+    if (/\/(?:emojis|avatars|icons)\//i.test(src)) return false;
+    if (el.tagName === 'IMG' && el.getAttribute('data-vac34-plugin-ui')) return false;
+    if (isGifMediaElement(el)) return false;
+    if (el.tagName === 'SOURCE') return el.parentElement?.tagName === 'VIDEO';
+    if (el.tagName === 'VIDEO') return true;
+    if (el.tagName !== 'IMG') return false;
+    // A media wrapper is strong evidence; without one require a Discord-hosted
+    // attachment URL so inline emoji, avatars and linked illustrations survive.
+    const inMediaBoundary = Boolean(el.closest?.(DOM_MEDIA_BOUNDARIES));
+    return inMediaBoundary || /(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/|\/attachments\/\d+\/\d+\//i.test(src);
+}
+
+function fallbackMediaTarget(el, row) {
+    const container = el.closest?.(DOM_MEDIA_BOUNDARIES);
+    if (container && container !== row && row.contains(container)
+        && !container.querySelector?.('[id^="message-content-"], [class*="messageContent"], [class*="repliedMessage"]')) {
+        return container;
+    }
+    // For a bare CDN attachment, do not collapse the entire accessories area:
+    // other attachments or text can be siblings of the image.
+    const parent = el.parentElement;
+    if (parent && parent !== row && row.contains(parent)
+        && !parent.matches?.('[id^="message-accessories-"], [class*="messageAccessories"], [class*="accessories_"]')
+        && !parent.querySelector?.('[id^="message-content-"], [class*="messageContent"]')) {
+        return parent;
+    }
+    return el.tagName === 'SOURCE' ? parent : el;
+}
+
+function clearDomMediaFallback(row) {
+    for (const target of row.querySelectorAll?.('.' + DOM_MEDIA_TARGET_CLASS) || []) {
+        target.classList.remove(DOM_MEDIA_TARGET_CLASS, DOM_MEDIA_HIDDEN_CLASS);
+    }
+    for (const button of row.querySelectorAll?.('.' + DOM_MEDIA_BUTTON_CLASS) || []) button.remove?.();
+}
+
+function reconcileDomMedia(row, enabled, message) {
+    if (!enabled) { clearDomMediaFallback(row); return; }
+    const targets = new Set();
+    // GIF-only messages are already removed by the GIF path, even when Discord
+    // substitutes an opaque blob: never expose them via a media Show button.
+    const gifOnly = gifOnlyMessage(message, Settings.current);
+    if (!gifOnly && !(hasStickers(message) && !messageHasNonStickerPayload(message)))
+    for (const leaf of row.querySelectorAll?.(DOM_MEDIA_LEAVES) || []) {
+        if (!isFallbackMediaLeaf(leaf, row)) continue;
+        const target = fallbackMediaTarget(leaf, row);
+        if (!target || target === row || !row.contains(target)) continue;
+        if (target.closest?.('.vac34-mf-shell')) continue;
+        if (target.closest?.('.' + STICKER_HIDDEN_CLASS)) continue;
+        // Do not turn an element explicitly suppressed as GIF into revealable media.
+        if (target.classList.contains(GIF_HIDDEN_CLASS)
+            || target.closest?.('.' + GIF_HIDDEN_CLASS)) continue;
+        targets.add(target);
+    }
+    for (const old of row.querySelectorAll?.('.' + DOM_MEDIA_TARGET_CLASS) || []) {
+        if (!targets.has(old)) {
+            old.classList.remove(DOM_MEDIA_TARGET_CLASS, DOM_MEDIA_HIDDEN_CLASS);
+            const previousButton = domMediaButtons.get(old);
+            previousButton?.remove?.();
+        }
+    }
+    for (const button of row.querySelectorAll?.('.' + DOM_MEDIA_BUTTON_CLASS) || []) {
+        if (!targets.has(button.previousElementSibling)) button.remove?.();
+    }
+    for (const target of targets) {
+        if (!target.parentElement || !target.insertAdjacentElement) continue;
+        let button = domMediaButtons.get(target);
+        if (!button) {
+            button = document.createElement('button');
+            button.type = 'button';
+            button.className = DOM_MEDIA_BUTTON_CLASS + ' vac34-mf-toggle';
+            button.setAttribute('data-vac34-plugin-ui', 'media-filter');
+            button.addEventListener('click', (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                const shown = target.classList.toggle(DOM_MEDIA_HIDDEN_CLASS);
+                button.textContent = shown ? 'Show' : 'Hide';
+                button.setAttribute('aria-expanded', String(!shown));
+            });
+            domMediaButtons.set(target, button);
+            target.classList.add(DOM_MEDIA_HIDDEN_CLASS);
+        }
+        if (!target.classList.contains(DOM_MEDIA_TARGET_CLASS)) target.classList.add(DOM_MEDIA_TARGET_CLASS);
+        if (button.previousElementSibling !== target) target.insertAdjacentElement('afterend', button);
+        const hidden = target.classList.contains(DOM_MEDIA_HIDDEN_CLASS);
+        button.textContent = hidden ? 'Show' : 'Hide';
+        button.setAttribute('aria-expanded', String(!hidden));
+    }
 }
 
 function rowHasVisibleNonStickerContent(row) {
@@ -850,6 +978,8 @@ function reconcileStickerRows(root = document) {
                 for (const el of hidden) el.classList.remove(STICKER_HIDDEN_CLASS);
             }
             row.querySelectorAll?.("." + STICKER_ACCESSORY_CLASS).forEach((el) => el.classList.remove(STICKER_ACCESSORY_CLASS));
+            hideGifAccessoryByRecord(row, message);
+            reconcileDomMedia(row, inScope && Settings.current.collapseMedia !== false, message);
             row.classList.toggle(STICKER_ROW_CLASS, Boolean(hideGifRow));
             continue;
         }
@@ -870,6 +1000,11 @@ function reconcileStickerRows(root = document) {
         }
 
         hideStickerAccessoryByRecord(row, message);
+        hideGifAccessoryByRecord(row, message);
+
+        // Independent media fallback: the private Discord React media hooks may
+        // fail to resolve after an update, including for ordinary PNG previews.
+        reconcileDomMedia(row, inScope && Settings.current.collapseMedia !== false, message);
 
         const hasNonSticker = rowHasVisibleNonStickerContent(row);
         const shouldHideRow = isKnownStickerOnly || hideGifRow || (hasStickersInDOM && !hasNonSticker);
@@ -915,7 +1050,7 @@ function startStickerObserver() {
                 // Ignore our own hide/show marker mutations (avoids loops).
                 if (record.attributeName === "class") {
                     const withoutMarkers = (value) => String(value || "").replace(
-                        /\bvac34-mf-(?:sticker-empty-row|sticker-hidden|sticker-accessory-hidden|gif-hidden)\b/g, ""
+                        /\bvac34-mf-(?:sticker-empty-row|sticker-hidden|sticker-accessory-hidden|gif-hidden|dom-media-hidden|dom-media-target|dom-media-toggle)\b/g, ""
                     ).replace(/\s+/g, " ").trim();
                     if (withoutMarkers(record.oldValue) === withoutMarkers(record.target.className)) continue;
                 }
@@ -945,6 +1080,7 @@ function stopStickerObserver() {
     document.querySelectorAll("." + STICKER_HIDDEN_CLASS).forEach((el) => el.classList.remove(STICKER_HIDDEN_CLASS));
     document.querySelectorAll("." + STICKER_ACCESSORY_CLASS).forEach((el) => el.classList.remove(STICKER_ACCESSORY_CLASS));
     document.querySelectorAll("." + GIF_HIDDEN_CLASS).forEach((el) => el.classList.remove(GIF_HIDDEN_CLASS));
+    clearDomMediaFallback(document);
 }
 
 function syncGlobalFlags() {
@@ -1075,6 +1211,8 @@ const css = `
 .${STICKER_HIDDEN_CLASS} { display: none !important; }
 html[data-vac34-mf-stickers] .${STICKER_ACCESSORY_CLASS} { display: none !important; }
 html[data-vac34-mf-gifs] .${GIF_HIDDEN_CLASS} { display: none !important; }
+.${DOM_MEDIA_HIDDEN_CLASS} { display: none !important; }
+.${DOM_MEDIA_BUTTON_CLASS} { display: inline-flex !important; align-items: center; justify-content: center; }
 html[data-vac34-mf-gifs] button[aria-label="gif" i],
 html[data-vac34-mf-gifs] button[aria-label*="gif picker" i],
 html[data-vac34-mf-gifs] button[aria-label*="гиф" i],
