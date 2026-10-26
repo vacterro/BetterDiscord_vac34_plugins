@@ -1,6 +1,6 @@
 /**
  * @name MediaFilter
- * @version 1.0.3
+ * @version 1.0.4
  * @author vacterro
  * @description Collapses images, videos and embeds with inline reveal, removes GIFs and stickers, and supports per-server scope.
  * @source https://github.com/vacterro/BetterDiscord_vac34_plugins/blob/main/MediaFilter.plugin.js
@@ -488,12 +488,17 @@ const DOM_MEDIA_TARGET_CLASS = "vac34-mf-dom-media-target";
 const DOM_MEDIA_BUTTON_CLASS = "vac34-mf-dom-media-toggle";
 // DOM fallback is intentionally limited to actual media inside a chat message.
 // Discord can change its React render entry points without changing attachment markup.
-const DOM_MEDIA_LEAVES = 'img[src], img[srcset], img[data-src], video[src], video[poster], video source[src]';
+// Lazy media can have no src at reconciliation time. Embed players can be
+// iframes; newer Discord builds also use <picture> and CSS thumbnails.
+const DOM_MEDIA_LEAVES = 'img, video, iframe, canvas, [style*="background-image"], [style*="backgroundImage"]';
 const DOM_MEDIA_BOUNDARIES = [
-    '[class*="imageWrapper"]', '[class*="videoContainer"]', '[class*="visualMediaItem"]',
-    '[class*="mosaicItem"]', '[class*="mediaContainer"]', '[class*="attachmentContainer"]',
-    '[class*="embedWrapper"]', '[class*="embedMedia"]', '[class*="clickableWrapper"]',
+    '[class*="imageWrapper"]', '[class*="videoContainer"]', '[class*="videoWrapper"]',
+    '[class*="visualMediaItem"]', '[class*="mosaicItem"]', '[class*="mediaContainer"]',
+    '[class*="mediaAttachmentsContainer"]', '[class*="attachmentContainer"]',
+    '[class*="embedWrapper"]', '[class*="embedMedia"]', '[class*="embedVideo"]',
+    '[class*="imageContent"]', '[class*="clickableWrapper"]',
 ].join(', ');
+const DOM_MEDIA_ACCESSORIES = '[id^="message-accessories-"], [class*="messageAccessories"], [class*="accessories_"]';
 const domMediaButtons = new WeakMap();
 const MEDIA_ROW_SELECTOR = 'li[id^="chat-messages-"], [data-list-item-id^="chat-messages"], [class*="messageListItem"]';
 const stickerOnlyIds = new Set();
@@ -830,22 +835,42 @@ function isStickerElement(el) {
 // A PNG posted as a meme can look like a sticker while actually being a normal
 // Discord attachment. The sticker-only suppression and regular media collapsing
 // must therefore remain separate operations.
-function isFallbackMediaLeaf(el, row) {
+function hasRegularMediaRecord(message) {
+    if (!message) return false;
+    const attachments = Array.isArray(message.attachments) ? message.attachments : [];
+    const embeds = Array.isArray(message.embeds) ? message.embeds : [];
+    if (attachments.some((item) => !isGifAttachment(item)) || embeds.some((item) => !isGifEmbed(item))) return true;
+    return Array.isArray(message.messageSnapshots)
+        && message.messageSnapshots.some((snapshot) => hasRegularMediaRecord(snapshot?.message));
+}
+
+function isFallbackMediaLeaf(el, row, message) {
     if (!el?.getAttribute || !row?.contains?.(el)) return false;
+    // Never treat avatars, inline emoji, quoted replies, reactions, or our own
+    // reveal UI as an attachment, regardless of its URL or element type.
     if (el.closest?.('[class*="avatar"], [class*="repliedMessage"], [class*="reaction"], [class*="emoji"], [class*="member"], [data-vac34-plugin-ui]')) return false;
     if (el.closest?.('.vac34-mf-shell')) return false;
     if (el.closest?.('.' + STICKER_HIDDEN_CLASS) || isStickerElement(el)) return false;
     const src = ['src', 'srcset', 'poster', 'data-src'].map((attr) => el.getAttribute(attr) || '').join(' ');
-    if (/\/(?:emojis|avatars|icons)\//i.test(src)) return false;
-    if (el.tagName === 'IMG' && el.getAttribute('data-vac34-plugin-ui')) return false;
+    if (/\/(?:emojis|avatars|icons|stickers)\//i.test(src)) return false;
     if (isGifMediaElement(el)) return false;
-    if (el.tagName === 'SOURCE') return el.parentElement?.tagName === 'VIDEO';
+    const boundary = el.closest?.(DOM_MEDIA_BOUNDARIES);
+    const inAccessories = Boolean(el.closest?.(DOM_MEDIA_ACCESSORIES));
+    const knownMedia = hasRegularMediaRecord(message);
+    const discordAttachment = /(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/|\/attachments\/\d+\/\d+\//i.test(src);
     if (el.tagName === 'VIDEO') return true;
-    if (el.tagName !== 'IMG') return false;
-    // A media wrapper is strong evidence; without one require a Discord-hosted
-    // attachment URL so inline emoji, avatars and linked illustrations survive.
-    const inMediaBoundary = Boolean(el.closest?.(DOM_MEDIA_BOUNDARIES));
-    return inMediaBoundary || /(?:cdn\.discordapp\.com|media\.discordapp\.net)\/attachments\/|\/attachments\/\d+\/\d+\//i.test(src);
+    if (el.tagName === 'IMG') {
+        // Opaque blob/data and unloaded images only count when they live in an
+        // actual media boundary or the message's accessories have media records.
+        return Boolean(boundary || discordAttachment || (inAccessories && knownMedia));
+    }
+    if (el.tagName === 'IFRAME') {
+        // Avoid hiding unrelated embedded app frames or message controls.
+        return Boolean(boundary && inAccessories);
+    }
+    if (el.tagName === 'CANVAS') return Boolean(boundary && inAccessories && knownMedia);
+    const style = String(el.getAttribute('style') || '');
+    return Boolean(/background-image\s*:/i.test(style) && (boundary || (inAccessories && knownMedia)));
 }
 
 function fallbackMediaTarget(el, row) {
@@ -854,48 +879,62 @@ function fallbackMediaTarget(el, row) {
         && !container.querySelector?.('[id^="message-content-"], [class*="messageContent"], [class*="repliedMessage"]')) {
         return container;
     }
-    // For a bare CDN attachment, do not collapse the entire accessories area:
-    // other attachments or text can be siblings of the image.
+    // Do not collapse an entire accessories block when siblings contain text,
+    // buttons, audio, polls, or unrelated attachments.
     const parent = el.parentElement;
     if (parent && parent !== row && row.contains(parent)
-        && !parent.matches?.('[id^="message-accessories-"], [class*="messageAccessories"], [class*="accessories_"]')
+        && !parent.matches?.(DOM_MEDIA_ACCESSORIES)
         && !parent.querySelector?.('[id^="message-content-"], [class*="messageContent"]')) {
         return parent;
     }
-    return el.tagName === 'SOURCE' ? parent : el;
+    return el;
+}
+
+function forgetDomMediaTarget(target) {
+    target.classList.remove(DOM_MEDIA_TARGET_CLASS, DOM_MEDIA_HIDDEN_CLASS);
+    domMediaButtons.get(target)?.remove?.();
+    domMediaButtons.delete(target);
 }
 
 function clearDomMediaFallback(row) {
-    for (const target of row.querySelectorAll?.('.' + DOM_MEDIA_TARGET_CLASS) || []) {
-        target.classList.remove(DOM_MEDIA_TARGET_CLASS, DOM_MEDIA_HIDDEN_CLASS);
-    }
+    for (const target of row.querySelectorAll?.('.' + DOM_MEDIA_TARGET_CLASS) || []) forgetDomMediaTarget(target);
     for (const button of row.querySelectorAll?.('.' + DOM_MEDIA_BUTTON_CLASS) || []) button.remove?.();
 }
 
 function reconcileDomMedia(row, enabled, message) {
     if (!enabled) { clearDomMediaFallback(row); return; }
     const targets = new Set();
-    // GIF-only messages are already removed by the GIF path, even when Discord
-    // substitutes an opaque blob: never expose them via a media Show button.
+    // GIF-only messages and sticker-only messages must never gain a Show button.
     const gifOnly = gifOnlyMessage(message, Settings.current);
-    if (!gifOnly && !(hasStickers(message) && !messageHasNonStickerPayload(message)))
-    for (const leaf of row.querySelectorAll?.(DOM_MEDIA_LEAVES) || []) {
-        if (!isFallbackMediaLeaf(leaf, row)) continue;
-        const target = fallbackMediaTarget(leaf, row);
-        if (!target || target === row || !row.contains(target)) continue;
-        if (target.closest?.('.vac34-mf-shell')) continue;
-        if (target.closest?.('.' + STICKER_HIDDEN_CLASS)) continue;
-        // Do not turn an element explicitly suppressed as GIF into revealable media.
-        if (target.classList.contains(GIF_HIDDEN_CLASS)
-            || target.closest?.('.' + GIF_HIDDEN_CLASS)) continue;
-        targets.add(target);
-    }
-    for (const old of row.querySelectorAll?.('.' + DOM_MEDIA_TARGET_CLASS) || []) {
-        if (!targets.has(old)) {
-            old.classList.remove(DOM_MEDIA_TARGET_CLASS, DOM_MEDIA_HIDDEN_CLASS);
-            const previousButton = domMediaButtons.get(old);
-            previousButton?.remove?.();
+    if (!gifOnly && !(hasStickers(message) && !messageHasNonStickerPayload(message))) {
+        for (const leaf of row.querySelectorAll?.(DOM_MEDIA_LEAVES) || []) {
+            if (!isFallbackMediaLeaf(leaf, row, message)) continue;
+            const target = fallbackMediaTarget(leaf, row);
+            if (!target || target === row || !row.contains(target)) continue;
+            if (target.closest?.('.vac34-mf-shell') || target.closest?.('.' + STICKER_HIDDEN_CLASS)) continue;
+            if (target.classList.contains(GIF_HIDDEN_CLASS) || target.closest?.('.' + GIF_HIDDEN_CLASS)) continue;
+            targets.add(target);
         }
+        // Discord sometimes mounts only a media wrapper while a preview is
+        // loading (no img/video yet). Use the message record as corroboration,
+        // and never hide the whole accessories container or message text.
+        if (hasRegularMediaRecord(message)) {
+            for (const candidate of row.querySelectorAll?.(DOM_MEDIA_BOUNDARIES) || []) {
+                if (!candidate.closest?.(DOM_MEDIA_ACCESSORIES) || candidate.matches?.(DOM_MEDIA_ACCESSORIES)) continue;
+                if (candidate.closest?.('.vac34-mf-shell') || candidate.closest?.('.' + GIF_HIDDEN_CLASS)) continue;
+                if (candidate.querySelector?.('[id^="message-content-"], [class*="messageContent"], [class*="repliedMessage"]')) continue;
+                if (candidate.querySelector?.('img, video, iframe, canvas, [style*="background-image"]')) continue;
+                if (candidate.querySelector?.(DOM_MEDIA_BOUNDARIES)) continue;
+                // A parent already chosen by a real media leaf is sufficient.
+                if (Array.from(targets).some((target) => candidate.contains(target) || target.contains(candidate))) continue;
+                targets.add(candidate);
+            }
+        }
+    }
+    // If media is replaced by text/GIF during virtualization, release stale
+    // classes and buttons, including their WeakMap ownership entries.
+    for (const old of row.querySelectorAll?.('.' + DOM_MEDIA_TARGET_CLASS) || []) {
+        if (!targets.has(old)) forgetDomMediaTarget(old);
     }
     for (const button of row.querySelectorAll?.('.' + DOM_MEDIA_BUTTON_CLASS) || []) {
         if (!targets.has(button.previousElementSibling)) button.remove?.();
@@ -903,7 +942,9 @@ function reconcileDomMedia(row, enabled, message) {
     for (const target of targets) {
         if (!target.parentElement || !target.insertAdjacentElement) continue;
         let button = domMediaButtons.get(target);
-        if (!button) {
+        // A removed button must not be re-used as if the preview were already
+        // revealed. This used to leak media on off/on and virtualized reuse.
+        if (!button || !button.parentElement) {
             button = document.createElement('button');
             button.type = 'button';
             button.className = DOM_MEDIA_BUTTON_CLASS + ' vac34-mf-toggle';
@@ -911,14 +952,14 @@ function reconcileDomMedia(row, enabled, message) {
             button.addEventListener('click', (event) => {
                 event.preventDefault();
                 event.stopPropagation();
-                const shown = target.classList.toggle(DOM_MEDIA_HIDDEN_CLASS);
-                button.textContent = shown ? 'Show' : 'Hide';
-                button.setAttribute('aria-expanded', String(!shown));
+                const hidden = target.classList.toggle(DOM_MEDIA_HIDDEN_CLASS);
+                button.textContent = hidden ? 'Show' : 'Hide';
+                button.setAttribute('aria-expanded', String(!hidden));
             });
             domMediaButtons.set(target, button);
             target.classList.add(DOM_MEDIA_HIDDEN_CLASS);
         }
-        if (!target.classList.contains(DOM_MEDIA_TARGET_CLASS)) target.classList.add(DOM_MEDIA_TARGET_CLASS);
+        target.classList.add(DOM_MEDIA_TARGET_CLASS);
         if (button.previousElementSibling !== target) target.insertAdjacentElement('afterend', button);
         const hidden = target.classList.contains(DOM_MEDIA_HIDDEN_CLASS);
         button.textContent = hidden ? 'Show' : 'Hide';
@@ -1047,6 +1088,10 @@ function startStickerObserver() {
     stickerObserver = new MutationObserver((records) => {
         for (const record of records) {
             if (record.type === "attributes") {
+                // Ignore style animations; only background-image changes can
+                // create or remove a CSS-rendered preview.
+                if (record.attributeName === "style" && !/background-image\s*:|backgroundImage\s*:/i.test(
+                    String(record.oldValue || "") + String(record.target.getAttribute?.("style") || ""))) continue;
                 // Ignore our own hide/show marker mutations (avoids loops).
                 if (record.attributeName === "class") {
                     const withoutMarkers = (value) => String(value || "").replace(
@@ -1064,7 +1109,7 @@ function startStickerObserver() {
     });
     stickerObserver.observe(host, {
         childList: true, subtree: true, attributes: true, attributeOldValue: true,
-        attributeFilter: ["src", "srcset", "data-src", "poster", "class", "data-type", "data-sticker-id", "aria-label", "data-list-item-id"],
+        attributeFilter: ["src", "srcset", "data-src", "poster", "style", "class", "data-type", "data-sticker-id", "aria-label", "data-list-item-id"],
     });
     reconcileStickerRows(document);
 }

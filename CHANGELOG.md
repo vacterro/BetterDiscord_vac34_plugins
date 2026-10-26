@@ -1,5 +1,13 @@
 # Changelog
 
+## MediaFilter 1.0.4
+
+- Fix off/on collapse regression: discard detached Show/Hide controls and reliably re-hide existing media nodes.
+- Recognize unloaded images, source-less videos, embedded iframe players, and opaque media backed by message attachment records.
+- Observe CSS background-image replacements without responding to unrelated animation style changes; preserve captions, emoji, avatars, and independent GIF/sticker filtering.
+- Add focused regression coverage for virtualization, settings reactivation, lazy media and inline controls (27 passing offline tests total).
+- Live BetterDiscord validation still required.
+
 ## MediaFilter 1.0.3
 
 - Add a reversible DOM media-collapse fallback for images and videos when Discord's private React media renderer cannot be intercepted. User-visible inline Show/Hide preserves captions, avatars, inline emoji and unrelated attachments.

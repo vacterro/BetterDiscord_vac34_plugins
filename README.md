@@ -14,7 +14,7 @@
 
 | Plugin | What it does | Version | Download |
 |---|---|---:|---|
-| **MediaFilter** | Collapses images, videos and embeds to a compact `Show` control, suppresses GIFs and stickers with a MessageStore-aware fallback, supports per-server scope, and avoids empty media gaps. | 1.0.3 | [MediaFilter.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/MediaFilter.plugin.js) |
+| **MediaFilter** | Collapses images, videos and embeds to a compact `Show` control, suppresses GIFs and stickers with a MessageStore-aware fallback, supports per-server scope, and avoids empty media gaps. | 1.0.4 | [MediaFilter.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/MediaFilter.plugin.js) |
 | **GoodEmoji** | Rewrites a small set of sad/toxic emoji into deliberately cheerful alternatives. | 1.1.1 | [GoodEmoji.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/GoodEmoji.plugin.js) |
 | **SilentTyping** | Stops Discord from sending your outgoing typing indicator while leaving incoming typing indicators untouched. | 1.0.0 | [SilentTyping.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/SilentTyping.plugin.js) |
 
@@ -27,7 +27,7 @@ Default behavior:
 - images, video previews, attachments and embeds are collapsed;
 - collapsed media leaves only a compact `Show` button;
 - `Show` reveals the original media **inline in the message**, not in a fullscreen viewer;
-- when the private Discord media renderer changes, eligible image/video previews still collapse via a reversible DOM fallback;
+- if Discord changes its internal media renderer, eligible image/video previews still collapse through an independent, reversible DOM fallback;
 - GIFs are removed before the media subtree reaches layout;
 - stickers are removed before Discord creates the sticker accessories layout when the render hook is available, and hidden using message records as a fallback;
 - sticker-only message rows are collapsed so they do not leave large empty gaps;
@@ -100,8 +100,3 @@ This repository is part of the broader [vacterro](https://github.com/vacterro) t
 **Less clutter. Fewer dead gaps. Discord can keep changing its furniture.**
 
 </div>
-
-<!-- VACTERRO_SUPPORT:BEGIN -->
----
-<sub>If this project is useful to you, optional support: [Buy Me a Coffee](https://buymeacoffee.com/vacuum34) · [Boosty](https://boosty.to/vacuum34/donate) · [PayPal](https://paypal.me/AlexNelin) · [other ways](https://github.com/vacterro/vacterro/blob/main/SUPPORT.md)</sub>
-<!-- VACTERRO_SUPPORT:END -->

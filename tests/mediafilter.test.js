@@ -10,7 +10,7 @@ class FakeElement {
     constructor(kind, attrs = {}, children = [], text = '') {
         this.kind = kind;
         this.nodeType = 1;
-        this.tagName = kind === 'regular-img' || kind === 'gif-img' || kind === 'avatar-img' || kind === 'emoji-img' ? 'IMG' : kind === 'video' ? 'VIDEO' : kind === 'source' ? 'SOURCE' : 'DIV';
+        this.tagName = kind === 'regular-img' || kind === 'gif-img' || kind === 'avatar-img' || kind === 'emoji-img' ? 'IMG' : kind === 'video' ? 'VIDEO' : kind === 'source' ? 'SOURCE' : kind === 'iframe' ? 'IFRAME' : kind === 'canvas' ? 'CANVAS' : 'DIV';
         this.events = {};
         this.attrs = { ...attrs };
         this.id = attrs.id || '';
@@ -60,7 +60,7 @@ class FakeElement {
         if (selector.includes('chat-messages-') && this.kind === 'row') return true;
         if (selector.includes('stickerNode') && this.kind === 'sticker') return true;
         if (selector.includes('mediaContainer') && this.kind === 'media-wrapper') return true;
-        if (selector.includes('message-accessories') && this.kind === 'accessories') return true;
+        if ((selector.includes('message-accessories') || selector.includes('messageAccessories') || selector.includes('accessories_')) && this.kind === 'accessories') return true;
         if (selector.includes('avatar') && this.kind === 'avatar') return true;
         if (selector.includes('emoji') && this.kind === 'emoji') return true;
         if (selector.includes('reaction') && this.kind === 'reaction') return true;
@@ -73,10 +73,13 @@ class FakeElement {
         if (selector.includes('chat-messages-')) {
             for (let node = this; node; node = node.parentElement) if (node.kind === 'row') return node;
         }
-        if (selector.includes('mediaContainer') || selector.includes('visualMediaItem') || selector.includes('embedWrapper')) {
+        if (selector.includes('mediaContainer') || selector.includes('visualMediaItem') || selector.includes('embedWrapper') || selector.includes('imageWrapper') || selector.includes('videoContainer')) {
             for (let node = this; node; node = node.parentElement) {
                 if (node.kind === 'gif-wrapper' || node.kind === 'media-wrapper') return node;
             }
+        }
+        if (selector.includes('message-accessories') || selector.includes('messageAccessories') || selector.includes('accessories_')) {
+            for (let node = this; node; node = node.parentElement) if (node.kind === 'accessories') return node;
         }
         if (selector.includes('avatar') || selector.includes('repliedMessage') || selector.includes('reaction') || selector.includes('emoji')) {
             for (let node = this; node; node = node.parentElement) {
@@ -96,8 +99,11 @@ class FakeElement {
         if (selector.startsWith('.vac34-mf-')) {
             return all.filter((el) => el.classList.contains(selector.slice(1)));
         }
-        if (selector.includes('img[src]') || selector.includes('video[src]')) {
-            return all.filter((el) => ['gif-img', 'regular-img', 'avatar-img', 'emoji-img', 'video', 'source'].includes(el.kind));
+        if (selector.includes('img[src]') || selector.includes('video[src]') || selector.includes('img, video')) {
+            return all.filter((el) => ['gif-img', 'regular-img', 'avatar-img', 'emoji-img', 'video', 'iframe', 'canvas', 'background'].includes(el.kind));
+        }
+        if (selector.includes('imageWrapper') || selector.includes('mediaContainer') || selector.includes('embedWrapper')) {
+            return all.filter((el) => el.kind === 'media-wrapper');
         }
         if (selector.includes('stickerNode')) return all.filter((el) => el.kind === 'sticker');
         if (selector.includes('message-accessories-')) return all.filter((el) => el.kind === 'accessories');
@@ -378,4 +384,89 @@ test('opaque GIF embed with text suppresses accessories without deleting the tex
     assert.equal(accessory.classList.contains('vac34-mf-gif-hidden'), true);
     assert.equal(item.querySelector('.vac34-mf-dom-media-toggle'), null);
     assert.equal(content.textContent, 'caption');
+});
+
+
+test('regression: disable and re-enable collapse must hide the same media target again', () => {
+    const f = fixture();
+    const media = new FakeElement('media-wrapper', {}, [new FakeElement('regular-img', { src: 'https://cdn.discordapp.com/attachments/1/2/photo.png' })]);
+    const item = row(media);
+    f.reconcileStickerRows(item);
+    const first = item.querySelector('.vac34-mf-dom-media-toggle');
+    first.click();
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), false);
+    f.Settings.current.collapseMedia = false;
+    f.reconcileStickerRows(item);
+    assert.equal(item.querySelector('.vac34-mf-dom-media-toggle'), null);
+    f.Settings.current.collapseMedia = true;
+    f.reconcileStickerRows(item);
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), true);
+    assert.equal(item.querySelectorAll('.vac34-mf-dom-media-toggle').length, 1);
+    assert.notEqual(item.querySelector('.vac34-mf-dom-media-toggle'), first);
+});
+
+test('regression: replacement and reuse of a media target must not preserve stale reveal state', () => {
+    const f = fixture();
+    const media = new FakeElement('media-wrapper', {}, [new FakeElement('regular-img', { src: 'https://cdn.discordapp.com/attachments/1/2/photo.png' })]);
+    const item = row(media);
+    f.reconcileStickerRows(item);
+    item.querySelector('.vac34-mf-dom-media-toggle').click();
+    media.children = [];
+    f.reconcileStickerRows(item);
+    assert.equal(item.querySelector('.vac34-mf-dom-media-toggle'), null);
+    const photo = new FakeElement('regular-img', { src: 'https://cdn.discordapp.com/attachments/3/4/new.png' });
+    photo.parentElement = media;
+    media.children = [photo];
+    f.reconcileStickerRows(item);
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), true);
+    assert.equal(item.querySelectorAll('.vac34-mf-dom-media-toggle').length, 1);
+});
+
+test('lazy image without src inside a media boundary is collapsed before loading', () => {
+    const f = fixture();
+    const media = new FakeElement('media-wrapper', {}, [new FakeElement('regular-img')]);
+    const item = row(media);
+    f.reconcileStickerRows(item);
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), true);
+});
+
+test('video without src is collapsed while message caption remains visible', () => {
+    const f = fixture();
+    const video = new FakeElement('video');
+    const media = new FakeElement('media-wrapper', {}, [video]);
+    const caption = new FakeElement('content', {}, [], 'Video caption');
+    const item = row(caption, media);
+    f.reconcileStickerRows(item);
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), true);
+    assert.equal(caption.textContent, 'Video caption');
+});
+
+test('iframe video preview in the accessories is collapsed', () => {
+    const f = fixture();
+    const frame = new FakeElement('iframe', { src: 'https://www.youtube.com/embed/example' });
+    const media = new FakeElement('media-wrapper', {}, [frame]);
+    const item = row(new FakeElement('accessories', {}, [media]));
+    f.reconcileStickerRows(item);
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), true);
+});
+
+test('opaque media in accessories uses attachment record, but never masks the caption', () => {
+    const f = fixture();
+    f.messages.set(messageId, { id: messageId, content: 'A caption', attachments: [{ filename: 'photo.jpg' }] });
+    const image = new FakeElement('regular-img', { src: 'blob:opaque' });
+    const content = new FakeElement('content', {}, [], 'A caption');
+    const accessory = new FakeElement('accessories', {}, [image]);
+    const item = row(content, accessory);
+    f.reconcileStickerRows(item);
+    assert.equal(image.classList.contains('vac34-mf-dom-media-hidden'), true);
+    assert.equal(accessory.classList.contains('vac34-mf-dom-media-hidden'), false);
+    assert.equal(content.textContent, 'A caption');
+});
+
+test('no media records means unrelated iframe and avatar never gain Show', () => {
+    const f = fixture();
+    const item = row(new FakeElement('content', {}, [new FakeElement('iframe')], 'text'),
+        new FakeElement('avatar', {}, [new FakeElement('avatar-img', { src: 'blob:avatar' })]));
+    f.reconcileStickerRows(item);
+    assert.equal(item.querySelector('.vac34-mf-dom-media-toggle'), null);
 });
