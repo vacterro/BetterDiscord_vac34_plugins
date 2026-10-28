@@ -1,0 +1,13 @@
+MediaFilter 1.0.4 - media preview leak regression patch
+
+1. Close Discord or disable MediaFilter in BetterDiscord Plugins.
+2. Copy MediaFilter.plugin.js from this archive to:
+   %APPDATA%\BetterDiscord\plugins
+3. Replace the previous MediaFilter.plugin.js file.
+4. Re-enable MediaFilter, then reload Discord with Ctrl+R.
+5. In MediaFilter settings, turn on "Collapse images, videos and embeds with Show/Hide".
+6. Check "All servers" / DM scope, "Remove GIFs", and "Remove stickers" as needed.
+
+GoodEmoji and SilentTyping are unchanged. Runtime files have no external dependencies.
+Tests: npm run check (requires Node.js; not needed for installation).
+The 27 automated tests pass against mocked Discord data/DOM; this is NOT a verified live Discord fix.

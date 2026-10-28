@@ -63,6 +63,10 @@ SilentTyping patches Discord's `startTyping` / `stopTyping` module calls. It onl
 
 A Discord reload (`Ctrl+R`) is usually enough after replacing a plugin file.
 
+For a Windows source checkout or extracted source archive, run `install.bat`
+to replace MediaFilter in the existing BetterDiscord plugins folder. The
+updater reports missing folders, missing source files and copy failures.
+
 ## Design rules
 
 - no remote runtime dependencies;
