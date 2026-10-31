@@ -14,11 +14,17 @@
 
 | Plugin | What it does | Version | Download |
 |---|---|---:|---|
-| **MediaFilter** | Collapses images, videos and embeds to a compact `Show` control, suppresses GIFs and stickers with a MessageStore-aware fallback, supports per-server scope, and avoids empty media gaps. | 1.0.4 | [MediaFilter.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/MediaFilter.plugin.js) |
+| **MediaFilter** | Collapses images, videos and embeds to a compact `Show` control, suppresses GIFs and stickers with a MessageStore-aware fallback, adds Alt+M per-server media and reaction toggles, and avoids empty media gaps. | 1.1.0 | [MediaFilter.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/MediaFilter.plugin.js) |
 | **GoodEmoji** | Rewrites a small set of sad/toxic emoji into deliberately cheerful alternatives. | 1.1.1 | [GoodEmoji.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/GoodEmoji.plugin.js) |
 | **SilentTyping** | Stops Discord from sending your outgoing typing indicator while leaving incoming typing indicators untouched. | 1.0.0 | [SilentTyping.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/SilentTyping.plugin.js) |
 
 ### MediaFilter
+
+**New in 1.1.0:** Press **Alt + M** in Discord to open or close the floating quick-control panel. It opens for the currently selected server and can switch to any other server or DMs. The server selector prioritizes sidebar order and frequently visited guilds. Changes are persisted as per-server overrides on top of global settings.
+
+You can independently toggle emoji **reactions under messages**, GIFs, stickers, image collapse, video collapse, embed collapse, duplicate embed URLs and the existing media-collapse master setting. Inline emojis in message text are not targeted by the reactions filter. Disabling reactions hides the native reaction bar visually; it does not delete reactions or alter Discord messages.
+
+Most changes apply instantly via settings listeners, message DOM reconciliation and the active-server CSS flag. If a Discord renderer does not react immediately, press **Ctrl + R**. Reset this server restores inherited global settings. **Alt + M** again, Escape or clicking outside closes the popup. Old settings are retained.
 
 MediaFilter combines the previously separate HideEmbeds, RemoveGIFS, and RemoveStickers experiments into one plugin with one settings surface and one ownership model.
 
