@@ -1,5 +1,16 @@
 # Changelog
 
+## MediaFilter 1.1.0
+
+- Add an Alt+M floating quick-controls panel with independent persistent settings for each Discord server and DMs.
+- Add a reaction-bar-only hiding option, leaving emoji inside message text untouched.
+- Split media collapse into images, videos, embeds and a legacy master toggle; GIF, sticker and source-link filtering remain independently configurable.
+- Prioritize servers near the top of the Discord sidebar and more frequently visited servers in the panel picker.
+- Apply changes through settings listeners, CSS flags, and DOM reconciliation without restarting wherever possible; Ctrl+R remains a fallback.
+- Preserve pre-existing global preferences and scope; add targeted offline regression tests.
+- Live Discord compatibility has not yet been verified.
+
+
 ## MediaFilter 1.0.4
 
 - Fix off/on collapse regression: discard detached Show/Hide controls and reliably re-hide existing media nodes.
