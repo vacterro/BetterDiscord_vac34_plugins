@@ -134,7 +134,7 @@ function fixture() {
         document: { createElement: () => new FakeElement('toggle') },
         AbortController, queueMicrotask,
     });
-    const exposed = vm.runInContext(source + '\n({ Settings, isGifAttachment, isGifEmbed, isGifMediaElement, gifOnlyMessage, reconcileStickerRows, messageForRow, clearDomMediaFallback });', context);
+    const exposed = vm.runInContext(source + '\n({ Settings, isGifAttachment, isGifEmbed, isGifMediaElement, gifOnlyMessage, reconcileStickerRows, messageForRow, clearDomMediaFallback, effectiveSettings, updateServerFilter, clearServerFilters, shouldCollapse, shouldCollapseDom, css });', context);
     return { ...exposed, messages, stores };
 }
 
@@ -469,4 +469,43 @@ test('no media records means unrelated iframe and avatar never gain Show', () =>
         new FakeElement('avatar', {}, [new FakeElement('avatar-img', { src: 'blob:avatar' })]));
     f.reconcileStickerRows(item);
     assert.equal(item.querySelector('.vac34-mf-dom-media-toggle'), null);
+});
+
+test('per-server overrides are independent and preserve global defaults', () => {
+    const f = fixture();
+    f.Settings.current.hideReactions = false;
+    f.Settings.current.collapseImages = true;
+    f.updateServerFilter('guild-1', 'hideReactions', true);
+    f.updateServerFilter('guild-1', 'collapseImages', false);
+    assert.equal(f.effectiveSettings().hideReactions, true);
+    assert.equal(f.shouldCollapse('media'), false);
+    assert.equal(f.shouldCollapse('video'), true);
+    f.stores.SelectedGuildStore.getGuildId = () => 'guild-2';
+    assert.equal(f.effectiveSettings().hideReactions, false);
+    assert.equal(f.shouldCollapse('media'), true);
+    f.updateServerFilter('guild-2', 'hideStickers', false);
+    assert.equal(f.effectiveSettings().hideStickers, false);
+    f.stores.SelectedGuildStore.getGuildId = () => 'guild-1';
+    assert.equal(f.effectiveSettings().hideStickers, true);
+    f.clearServerFilters('guild-1');
+    assert.equal(f.effectiveSettings().hideReactions, false);
+    assert.equal(f.Settings.current.serverFilters['guild-2'].hideStickers, false);
+});
+
+test('reaction hiding targets message reaction containers only, not inline emoji', () => {
+    const f = fixture();
+    assert.equal(f.Settings.current.hideReactions, false);
+    assert.match(f.css, /data-vac34-mf-reactions/);
+    assert.match(f.css, /reactions_/);
+    assert.match(f.css, /chat-messages-/);
+    assert.doesNotMatch(f.css.split('html[data-vac34-mf-reactions]')[1].split('{')[0], /emoji_/);
+});
+
+test('DM profile is independent of guild profiles', () => {
+    const f = fixture();
+    f.updateServerFilter(null, 'hideReactions', true);
+    f.stores.SelectedGuildStore.getGuildId = () => null;
+    assert.equal(f.effectiveSettings().hideReactions, true);
+    f.stores.SelectedGuildStore.getGuildId = () => 'guild-1';
+    assert.equal(f.effectiveSettings().hideReactions, false);
 });
