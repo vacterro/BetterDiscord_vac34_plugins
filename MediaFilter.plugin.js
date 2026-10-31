@@ -1,8 +1,8 @@
 /**
  * @name MediaFilter
- * @version 1.0.4
+ * @version 1.1.0
  * @author vacterro
- * @description Collapses images, videos and embeds with inline reveal, removes GIFs and stickers, and supports per-server scope.
+ * @description Per-server filtering and Alt+M quick controls for media, stickers and emoji reactions.
  * @source https://github.com/vacterro/BetterDiscord_vac34_plugins/blob/main/MediaFilter.plugin.js
  * @website https://github.com/vacterro/BetterDiscord_vac34_plugins
  * @license MIT
@@ -391,15 +391,172 @@ const Settings = createSettings({
     hideGifs: true,
     hideStickers: true,
     hideEmbedLinks: true,
+    hideReactions: false,
+    collapseImages: true,
+    collapseVideos: true,
+    collapseEmbeds: true,
+    serverFilters: {},
 });
+
+
+let quickPanel = null;
+let quickPanelGuildId = null;
+let quickKeyHandler = null;
+let quickOutsideHandler = null;
+let lastTrackedGuildId = undefined;
+let guildVisits = null;
+function trackServerVisit() {
+    const id = selectedGuildId();
+    if (id === lastTrackedGuildId) return;
+    lastTrackedGuildId = id;
+    if (!id) return;
+    if (!guildVisits) {
+        try { guildVisits = load("serverVisits") || {}; } catch { guildVisits = {}; }
+    }
+    const key = String(id);
+    guildVisits[key] = Math.min(100000, Math.max(0, Number(guildVisits[key]) || 0) + 1);
+    try { save("serverVisits", guildVisits); } catch {}
+}
+function prioritizedGuilds() {
+    const guilds = getGuilds();
+    const sortedStore = BdApi.Webpack.getStore?.("SortedGuildStore");
+    let sidebar = [];
+    try { sidebar = sortedStore?.getFlattenedGuildIds?.() || sortedStore?.getGuildIds?.() || []; } catch {}
+    if (!Array.isArray(sidebar)) sidebar = [];
+    const indices = new Map(sidebar.map((id, index) => [String(id), index]));
+    return guilds.sort((a, b) => {
+        const ai = indices.get(String(a.id)) ?? Infinity, bi = indices.get(String(b.id)) ?? Infinity;
+        const av = Number(guildVisits?.[String(a.id)]) || 0, bv = Number(guildVisits?.[String(b.id)]) || 0;
+        const as = Math.min(av, 20) * 3 + (Number.isFinite(ai) ? Math.max(0, 100 - ai * 4) : 0);
+        const bs = Math.min(bv, 20) * 3 + (Number.isFinite(bi) ? Math.max(0, 100 - bi * 4) : 0);
+        return bs - as || ai - bi || String(a.name || "").localeCompare(String(b.name || ""));
+    });
+}
+function renderQuickPanel() {
+    if (!quickPanel) return;
+    const guild = quickPanelGuildId;
+    const settings = effectiveSettings(Settings.current, guild);
+    const stored = Settings.current.serverFilters?.[filterServerKey(guild)] || {};
+    const el = (tag, value, klass) => {
+        const node = document.createElement(tag);
+        if (value != null) node.textContent = value;
+        if (klass) node.className = klass;
+        return node;
+    };
+    quickPanel.replaceChildren();
+    const top = el("div", null, "vac34-mf-quick__top");
+    top.append(el("strong", "MediaFilter  |  Alt + M"));
+    const close = el("button", "×");
+    close.type = "button";
+    close.setAttribute("aria-label", "Close MediaFilter panel");
+    close.addEventListener("click", closeQuickPanel);
+    top.append(close);
+    quickPanel.append(top);
+    const picker = el("select");
+    picker.setAttribute("aria-label", "Configure server");
+    picker.style.width = "100%";
+    const options = [{ id: "@dm", name: "Direct messages" }, ...prioritizedGuilds()];
+    if (guild && !options.some((item) => String(item.id) === String(guild))) options.unshift({ id: guild, name: "Current server" });
+    for (const item of options) {
+        const option = el("option", item.name || String(item.id));
+        option.value = String(item.id);
+        if (option.value === filterServerKey(guild)) option.selected = true;
+        picker.append(option);
+    }
+    picker.addEventListener("change", () => {
+        quickPanelGuildId = picker.value === "@dm" ? null : picker.value;
+        renderQuickPanel();
+    });
+    quickPanel.append(picker);
+    quickPanel.append(el("p", "Saved per server. Reactions means the emoji reaction bar below messages, not emoji inside text.", "vac34-mf-quick__muted"));
+    for (const key of FILTER_KEYS) {
+        const label = el("label");
+        const input = el("input");
+        input.type = "checkbox";
+        input.checked = key === "hideReactions" ? settings[key] === true : settings[key] !== false;
+        input.addEventListener("change", () => updateServerFilter(guild, key, input.checked));
+        label.append(input, el("span", FILTER_LABELS[key]));
+        if (typeof stored[key] !== "boolean") label.title = "Inherited from global defaults";
+        quickPanel.append(label);
+    }
+    const bottom = el("div", null, "vac34-mf-quick__foot");
+    bottom.append(el("span", Object.keys(stored).length ? "Custom server profile" : "Global defaults", "vac34-mf-quick__muted"));
+    const reset = el("button", "Reset this server");
+    reset.type = "button";
+    reset.addEventListener("click", () => clearServerFilters(guild));
+    bottom.append(reset);
+    quickPanel.append(bottom);
+}
+function closeQuickPanel() { quickPanel?.remove(); quickPanel = null; }
+function toggleQuickPanel() {
+    if (quickPanel) { closeQuickPanel(); return; }
+    quickPanelGuildId = selectedGuildId();
+    quickPanel = document.createElement("section");
+    quickPanel.className = "vac34-mf-quick";
+    quickPanel.setAttribute("role", "dialog");
+    quickPanel.setAttribute("aria-label", "MediaFilter quick controls");
+    document.body.append(quickPanel);
+    renderQuickPanel();
+}
+function startQuickPanel() {
+    if (quickKeyHandler) return;
+    quickKeyHandler = (event) => {
+        if (event.key?.toLowerCase() === "m" && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.repeat) {
+            event.preventDefault(); event.stopPropagation(); toggleQuickPanel();
+        } else if (event.key === "Escape" && quickPanel) closeQuickPanel();
+    };
+    quickOutsideHandler = (event) => { if (quickPanel && !quickPanel.contains(event.target)) closeQuickPanel(); };
+    document.addEventListener("keydown", quickKeyHandler, true);
+    document.addEventListener("mousedown", quickOutsideHandler, true);
+}
+function stopQuickPanel() {
+    closeQuickPanel();
+    if (quickKeyHandler) document.removeEventListener("keydown", quickKeyHandler, true);
+    if (quickOutsideHandler) document.removeEventListener("mousedown", quickOutsideHandler, true);
+    quickKeyHandler = null; quickOutsideHandler = null; lastTrackedGuildId = undefined;
+}
 
 function selectedGuildId() {
     try { return BdApi.Webpack.Stores?.SelectedGuildStore?.getGuildId?.() ?? null; }
     catch { return null; }
 }
 
+const FILTER_KEYS = ["hideReactions", "hideStickers", "hideGifs", "collapseImages", "collapseVideos", "collapseEmbeds", "hideEmbedLinks"];
+const FILTER_LABELS = {
+    hideReactions: "Hide emoji reactions",
+    hideStickers: "Hide stickers",
+    hideGifs: "Hide GIFs",
+    collapseImages: "Collapse images",
+    collapseVideos: "Collapse videos",
+    collapseEmbeds: "Collapse embeds",
+    hideEmbedLinks: "Hide duplicate embed URLs",
+};
+function filterServerKey(guildId = selectedGuildId()) {
+    return guildId == null ? "@dm" : String(guildId);
+}
+function effectiveSettings(settings = Settings.current, guildId = selectedGuildId()) {
+    const map = settings.serverFilters;
+    const id = filterServerKey(guildId);
+    const saved = map && typeof map === "object" && Object.prototype.hasOwnProperty.call(map, id) ? map[id] : null;
+    if (!saved || typeof saved !== "object") return settings;
+    const result = { ...settings };
+    for (const key of FILTER_KEYS) if (typeof saved[key] === "boolean") result[key] = saved[key];
+    return result;
+}
+function updateServerFilter(guildId, key, value) {
+    if (!FILTER_KEYS.includes(key) || typeof value !== "boolean") return;
+    const id = filterServerKey(guildId);
+    const existing = Settings.current.serverFilters || {};
+    Settings.update({ serverFilters: { ...existing, [id]: { ...(existing[id] || {}), [key]: value } } });
+}
+function clearServerFilters(guildId) {
+    const existing = { ...(Settings.current.serverFilters || {}) };
+    delete existing[filterServerKey(guildId)];
+    Settings.update({ serverFilters: existing });
+}
 function scopeEnabled(settings = Settings.current) {
     const guildId = selectedGuildId();
+    if (Object.prototype.hasOwnProperty.call(settings.serverFilters || {}, filterServerKey(guildId))) return true;
     if (!guildId) return settings.enableDMs !== false;
     const selected = Array.isArray(settings.selectedGuilds) ? settings.selectedGuilds : [];
     if (settings.scopeMode === "only") return selected.includes(guildId);
@@ -418,6 +575,25 @@ function getGuilds() {
 
 function str(value) { return typeof value === "string" ? value : ""; }
 
+function isVideoAttachment(attachment) {
+    if (!attachment) return false;
+    const type = str(attachment.contentType || attachment.content_type).toLowerCase();
+    return type.startsWith("video/") || /\.(?:mp4|webm|mov|m4v|mkv)(?:$|[?#])/i.test(str(attachment.filename));
+}
+function shouldCollapse(kind, settings = effectiveSettings()) {
+    if (settings.collapseMedia === false) return false;
+    if (kind === "embed") return settings.collapseEmbeds !== false;
+    if (kind === "video" || kind === "media-video") return settings.collapseVideos !== false;
+    return settings.collapseImages !== false;
+}
+function shouldCollapseDom(target, settings = effectiveSettings()) {
+    const name = String(target?.className || "");
+    if (target?.tagName === "VIDEO" || target?.querySelector?.("video") || /video(?:Container|Wrapper|Media|_)/i.test(name))
+        return shouldCollapse("video", settings);
+    if (target?.tagName === "IFRAME" || /embed(?:Wrapper|Media|Video|_)/i.test(name))
+        return shouldCollapse("embed", settings);
+    return shouldCollapse("image", settings);
+}
 function isGifAttachment(attachment) {
     if (!attachment) return false;
     const type = str(attachment.contentType || attachment.content_type).toLowerCase();
@@ -801,7 +977,7 @@ function hideStickerAccessoryByRecord(row, message) {
     // The accessories area can be removed as a whole only when there is no
     // attachment/embed/poll competing for that area. Message text stays visible.
     const shouldHide = hasStickers(message)
-        && !hasUnfilteredMedia(message, { ...Settings.current, hideStickers: true });
+        && !hasUnfilteredMedia(message, { ...effectiveSettings(), hideStickers: true });
     const accessories = row.querySelector?.(
         '[id^="message-accessories-"], [class*="messageAccessories"], [class*="accessories_"]'
     );
@@ -816,8 +992,8 @@ function hideGifAccessoryByRecord(row, message) {
     if (!accessories) return;
     const hasGif = (Array.isArray(message?.attachments) && message.attachments.some(isGifAttachment))
         || (Array.isArray(message?.embeds) && message.embeds.some(isGifEmbed));
-    const shouldHide = Settings.current.hideGifs !== false && hasGif
-        && !hasUnfilteredMedia(message, Settings.current);
+    const shouldHide = effectiveSettings().hideGifs !== false && hasGif
+        && !hasUnfilteredMedia(message, effectiveSettings());
     accessories.classList.toggle(GIF_HIDDEN_CLASS, Boolean(shouldHide));
 }
 
@@ -905,12 +1081,13 @@ function reconcileDomMedia(row, enabled, message) {
     if (!enabled) { clearDomMediaFallback(row); return; }
     const targets = new Set();
     // GIF-only messages and sticker-only messages must never gain a Show button.
-    const gifOnly = gifOnlyMessage(message, Settings.current);
+    const gifOnly = gifOnlyMessage(message, effectiveSettings());
     if (!gifOnly && !(hasStickers(message) && !messageHasNonStickerPayload(message))) {
         for (const leaf of row.querySelectorAll?.(DOM_MEDIA_LEAVES) || []) {
             if (!isFallbackMediaLeaf(leaf, row, message)) continue;
             const target = fallbackMediaTarget(leaf, row);
             if (!target || target === row || !row.contains(target)) continue;
+            if (!shouldCollapseDom(target)) continue;
             if (target.closest?.('.vac34-mf-shell') || target.closest?.('.' + STICKER_HIDDEN_CLASS)) continue;
             if (target.classList.contains(GIF_HIDDEN_CLASS) || target.closest?.('.' + GIF_HIDDEN_CLASS)) continue;
             targets.add(target);
@@ -921,6 +1098,7 @@ function reconcileDomMedia(row, enabled, message) {
         if (hasRegularMediaRecord(message)) {
             for (const candidate of row.querySelectorAll?.(DOM_MEDIA_BOUNDARIES) || []) {
                 if (!candidate.closest?.(DOM_MEDIA_ACCESSORIES) || candidate.matches?.(DOM_MEDIA_ACCESSORIES)) continue;
+                if (!shouldCollapseDom(candidate)) continue;
                 if (candidate.closest?.('.vac34-mf-shell') || candidate.closest?.('.' + GIF_HIDDEN_CLASS)) continue;
                 if (candidate.querySelector?.('[id^="message-content-"], [class*="messageContent"], [class*="repliedMessage"]')) continue;
                 if (candidate.querySelector?.('img, video, iframe, canvas, [style*="background-image"]')) continue;
@@ -992,8 +1170,8 @@ function rowMessageId(row) {
 function reconcileStickerRows(root = document) {
     if (!root?.querySelectorAll) return;
     const inScope = scopeEnabled();
-    const enabled = Settings.current.hideStickers !== false && inScope;
-    const gifEnabled = Settings.current.hideGifs !== false && inScope;
+    const enabled = effectiveSettings().hideStickers !== false && inScope;
+    const gifEnabled = effectiveSettings().hideGifs !== false && inScope;
     const rows = [];
     if (root.matches?.(MEDIA_ROW_SELECTOR)) rows.push(root);
     for (const row of root.querySelectorAll(MEDIA_ROW_SELECTOR)) rows.push(row);
@@ -1008,7 +1186,7 @@ function reconcileStickerRows(root = document) {
         const isKnownStickerOnly = enabled && Boolean(id && stickerOnlyIds.has(id));
 
         const hasGifDOM = reconcileGifMedia(row, gifEnabled);
-        const hideGifRow = gifEnabled && (gifOnlyMessage(message, Settings.current)
+        const hideGifRow = gifEnabled && (gifOnlyMessage(message, effectiveSettings())
             || (hasGifDOM && !message && !rowHasVisibleNonStickerContent(row)
                 && !row.querySelector?.('[class*="messageContent"]')));
 
@@ -1020,7 +1198,7 @@ function reconcileStickerRows(root = document) {
             }
             row.querySelectorAll?.("." + STICKER_ACCESSORY_CLASS).forEach((el) => el.classList.remove(STICKER_ACCESSORY_CLASS));
             hideGifAccessoryByRecord(row, message);
-            reconcileDomMedia(row, inScope && Settings.current.collapseMedia !== false, message);
+            reconcileDomMedia(row, inScope && effectiveSettings().collapseMedia !== false, message);
             row.classList.toggle(STICKER_ROW_CLASS, Boolean(hideGifRow));
             continue;
         }
@@ -1045,7 +1223,7 @@ function reconcileStickerRows(root = document) {
 
         // Independent media fallback: the private Discord React media hooks may
         // fail to resolve after an update, including for ordinary PNG previews.
-        reconcileDomMedia(row, inScope && Settings.current.collapseMedia !== false, message);
+        reconcileDomMedia(row, inScope && effectiveSettings().collapseMedia !== false, message);
 
         const hasNonSticker = rowHasVisibleNonStickerContent(row);
         const shouldHideRow = isKnownStickerOnly || hideGifRow || (hasStickersInDOM && !hasNonSticker);
@@ -1132,9 +1310,12 @@ function syncGlobalFlags() {
     const root = document.documentElement;
     if (!root) return;
     const inScope = scopeEnabled();
-    root.toggleAttribute("data-vac34-mf-gifs", inScope && Settings.current.hideGifs !== false);
-    root.toggleAttribute("data-vac34-mf-stickers", inScope && Settings.current.hideStickers !== false);
+    root.toggleAttribute("data-vac34-mf-gifs", inScope && effectiveSettings().hideGifs !== false);
+    root.toggleAttribute("data-vac34-mf-stickers", inScope && effectiveSettings().hideStickers !== false);
+    root.toggleAttribute("data-vac34-mf-reactions", inScope && effectiveSettings().hideReactions === true);
+    trackServerVisit();
     reconcileStickerRows(document);
+    renderQuickPanel();
 }
 
 function attachStoreListeners() {
@@ -1162,7 +1343,7 @@ function detachStoreListeners() {
 const MediaShell = ({ children, kind }) => {
     const settings = Settings.useCurrent();
     const [shown, setShown] = React.useState(false);
-    if (!scopeEnabled(settings) || settings.collapseMedia === false) return children;
+    if (!scopeEnabled(settings) || !shouldCollapse(kind, effectiveSettings(settings))) return children;
 
     return React.createElement(
         "div",
@@ -1220,6 +1401,10 @@ function SettingsPanel() {
         row(checkbox("Collapse images, videos and embeds with Show/Hide", settings.collapseMedia !== false, (value) => setSettings({ collapseMedia: value }))),
         row(checkbox("Remove GIFs", settings.hideGifs !== false, (value) => setSettings({ hideGifs: value }))),
         row(checkbox("Remove stickers", settings.hideStickers !== false, (value) => setSettings({ hideStickers: value }))),
+        row(checkbox("Hide emoji reactions (not inline emoji)", settings.hideReactions === true, (value) => setSettings({ hideReactions: value }))),
+        row(checkbox("Collapse images", settings.collapseImages !== false, (value) => setSettings({ collapseImages: value }))),
+        row(checkbox("Collapse videos", settings.collapseVideos !== false, (value) => setSettings({ collapseVideos: value }))),
+        row(checkbox("Collapse embeds", settings.collapseEmbeds !== false, (value) => setSettings({ collapseEmbeds: value }))),
         row(checkbox("Hide source URL when Discord already rendered an embed", settings.hideEmbedLinks !== false, (value) => setSettings({ hideEmbedLinks: value }))),
         React.createElement("div", { style: { fontWeight: 700, margin: "14px 0 6px" } }, "Servers"),
         guilds.length
@@ -1235,6 +1420,14 @@ function SettingsPanel() {
 }
 
 const css = `
+html[data-vac34-mf-reactions] :is(li[id^="chat-messages-"], [data-list-item-id^="chat-messages"], [class*="messageListItem"]) :is([class^="reactions_"], [class*=" reactions_"], [class^="reactionsContainer_"], [class*=" reactionsContainer_"], [class^="reactions-"], [class*=" reactions-"]) { display: none !important; }
+.vac34-mf-quick { position:fixed; z-index:100050; right:22px; top:75px; width:330px; max-width:calc(100vw - 32px); max-height:80vh; overflow:auto; box-sizing:border-box; border-radius:10px; border:1px solid var(--background-modifier-accent,#444); background:var(--background-secondary,#26272d); color:var(--text-normal,#eee); box-shadow:0 14px 50px #0009; padding:14px; font-size:13px; }
+.vac34-mf-quick button, .vac34-mf-quick select { background:var(--background-tertiary,#1e1f23); color:inherit; border:1px solid var(--background-modifier-accent,#555); border-radius:5px; padding:5px; cursor:pointer; }
+.vac34-mf-quick label { display:flex; gap:9px; align-items:center; margin:9px 0; cursor:pointer; }
+.vac34-mf-quick input[type="checkbox"] { accent-color:var(--brand-500,#5865f2); }
+.vac34-mf-quick__top, .vac34-mf-quick__foot { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
+.vac34-mf-quick__foot { margin-top:12px; margin-bottom:0; }
+.vac34-mf-quick__muted { color:var(--text-muted,#aaa); font-size:11px; }
 .vac34-mf-shell { min-width: 0; max-width: 100%; }
 .vac34-mf-hidden {
     display: flex !important; align-items: center !important; width: max-content !important;
@@ -1295,13 +1488,14 @@ const index = createPlugin({
         Settings.addListener(syncGlobalFlags);
         attachStoreListeners();
         startStickerObserver();
+        startQuickPanel();
 
         const patchMessageAccessories = (mod) => {
             if (!mod) return;
             const proto = mod.prototype;
             if (proto?.render) {
                 BdApi.Patcher.instead(getMeta().name, proto, "render", (instance, args, original) => {
-                    if (!scopeEnabled() || Settings.current.hideStickers === false) return original.apply(instance, args);
+                    if (!scopeEnabled() || effectiveSettings().hideStickers === false) return original.apply(instance, args);
                     const originalProps = instance?.props;
                     const message = originalProps?.message;
                     const ids = stickerIdsFromMessage(message);
@@ -1335,7 +1529,7 @@ const index = createPlugin({
                     : null;
                 if (targetKey && typeof mod[targetKey] === "function") {
                     after(mod, targetKey, ({ args, result }) => {
-                        if (!scopeEnabled() || Settings.current.hideStickers === false || !result) return result;
+                        if (!scopeEnabled() || effectiveSettings().hideStickers === false || !result) return result;
                         const message = args?.[0]?.message;
                         const ids = stickerIdsFromMessage(message);
                         const id = message?.id != null ? String(message.id) : "";
@@ -1378,7 +1572,7 @@ const index = createPlugin({
                 const key = Object.entries(stickerModule).find(([, fn]) => typeof fn === "function" && (String(fn).includes("renderStickers") || String(fn).includes("renderSticker")))?.[0];
                 if (key) {
                     BdApi.Patcher.instead(getMeta().name, stickerModule, key, (instance, args, original) => {
-                        if (scopeEnabled() && Settings.current.hideStickers !== false) return null;
+                        if (scopeEnabled() && effectiveSettings().hideStickers !== false) return null;
                         return original.apply(instance, args);
                     });
                 }
@@ -1390,8 +1584,8 @@ const index = createPlugin({
             after(Embed.prototype, "render", ({ result, context }) => {
                 const embed = context?.props?.embed;
                 if (!result || !scopeEnabled()) return result;
-                if (Settings.current.hideGifs !== false && isGifEmbed(embed)) return null;
-                if (Settings.current.collapseMedia === false) return result;
+                if (effectiveSettings().hideGifs !== false && isGifEmbed(embed)) return null;
+                if (!shouldCollapse("embed")) return result;
                 return React.createElement(MediaShell, { kind: "embed" }, result);
             }, { name: "Embed render" });
         }
@@ -1405,9 +1599,10 @@ const index = createPlugin({
             after(...MediaItem, ({ args: [props], result }) => {
                 const attachment = props?.item?.originalItem;
                 if (!result || !scopeEnabled()) return result;
-                if (Settings.current.hideGifs !== false && isGifAttachment(attachment)) return null;
-                if (Settings.current.collapseMedia === false) return result;
-                return React.createElement(MediaShell, { kind: props?.isSingleMosaicItem ? "media-single" : "media" }, result);
+                if (effectiveSettings().hideGifs !== false && isGifAttachment(attachment)) return null;
+                const kind = isVideoAttachment(attachment) ? "media-video" : "media";
+                if (!shouldCollapse(kind)) return result;
+                return React.createElement(MediaShell, { kind }, result);
             }, { name: "MediaItem render" });
         });
 
@@ -1418,9 +1613,10 @@ const index = createPlugin({
                     hookFunctionComponent(element, (childResult, props) => {
                         const attachments = props?.attachments ?? [];
                         if (!childResult || attachments.length === 0 || !scopeEnabled()) return childResult;
-                        if (Settings.current.hideGifs !== false && attachments.every((entry) => isGifAttachment(entry?.attachment))) return null;
-                        if (Settings.current.collapseMedia === false) return childResult;
-                        return React.createElement(MediaShell, { kind: "attachment" }, childResult);
+                        if (effectiveSettings().hideGifs !== false && attachments.every((entry) => isGifAttachment(entry?.attachment))) return null;
+                        const kinds = attachments.map((entry) => isVideoAttachment(entry?.attachment) ? "video" : "image");
+                        if (kinds.some((kind) => !shouldCollapse(kind))) return childResult;
+                        return React.createElement(MediaShell, { kind: kinds.every((kind) => kind === "video") ? "video" : "attachment" }, childResult);
                     });
                 }
             }, { name: "MessageFooter renderAttachments" });
@@ -1431,7 +1627,7 @@ const index = createPlugin({
         );
         if (MessageContentModule?.type) {
             after(MessageContentModule, "type", ({ args: [props], result }) => {
-                if (!scopeEnabled() || Settings.current.hideEmbedLinks === false) return result;
+                if (!scopeEnabled() || effectiveSettings().hideEmbedLinks === false) return result;
                 const embeds = props?.message?.embeds;
                 if (!Array.isArray(embeds) || embeds.length === 0 || !result?.props?.children) return result;
                 const arrays = [result.props.children].flat().filter(Array.isArray);
@@ -1453,6 +1649,8 @@ const index = createPlugin({
         stopStickerObserver();
         document.documentElement?.removeAttribute("data-vac34-mf-gifs");
         document.documentElement?.removeAttribute("data-vac34-mf-stickers");
+        document.documentElement?.removeAttribute("data-vac34-mf-reactions");
+        stopQuickPanel();
     },
     styles: css,
     Settings,
