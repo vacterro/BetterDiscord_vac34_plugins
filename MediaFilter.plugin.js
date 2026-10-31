@@ -501,7 +501,7 @@ function toggleQuickPanel() {
 function startQuickPanel() {
     if (quickKeyHandler) return;
     quickKeyHandler = (event) => {
-        if (event.key?.toLowerCase() === "m" && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.repeat) {
+        if ((event.code === "KeyM" || event.key?.toLowerCase() === "m") && event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.repeat) {
             event.preventDefault(); event.stopPropagation(); toggleQuickPanel();
         } else if (event.key === "Escape" && quickPanel) closeQuickPanel();
     };
@@ -591,7 +591,7 @@ function shouldCollapseDom(target, settings = effectiveSettings()) {
     const name = String(target?.className || "");
     if (target?.tagName === "VIDEO" || target?.querySelector?.("video") || /video(?:Container|Wrapper|Media|_)/i.test(name))
         return shouldCollapse("video", settings);
-    if (target?.tagName === "IFRAME" || /embed(?:Wrapper|Media|Video|_)/i.test(name))
+    if (target?.tagName === "IFRAME" || target?.querySelector?.("iframe") || /embed(?:Wrapper|Media|Video|_)/i.test(name))
         return shouldCollapse("embed", settings);
     return shouldCollapse("image", settings);
 }
