@@ -134,7 +134,8 @@ function fixture() {
         document: { createElement: () => new FakeElement('toggle') },
         AbortController, queueMicrotask,
     });
-    const exposed = vm.runInContext(source + '\n({ Settings, isGifAttachment, isGifEmbed, isGifMediaElement, gifOnlyMessage, reconcileStickerRows, messageForRow, clearDomMediaFallback, effectiveSettings, updateServerFilter, clearServerFilters, shouldCollapse, shouldCollapseDom, css });', context);
+    const exposed = vm.runInContext(source + '\n({ Settings, isGifAttachment, isGifEmbed, isGifMediaElement, gifOnlyMessage, reconcileStickerRows, messageForRow, clearDomMediaFallback, effectiveSettings, updateServerFilter, clearServerFilters, shouldCollapse, shouldCollapseDom, css, setMeta });', context);
+    exposed.setMeta({ name: 'MediaFilter', version: '1.1.0' });
     return { ...exposed, messages, stores };
 }
 
