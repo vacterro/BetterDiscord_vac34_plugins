@@ -521,11 +521,12 @@ function selectedGuildId() {
     catch { return null; }
 }
 
-const FILTER_KEYS = ["hideReactions", "hideStickers", "hideGifs", "collapseImages", "collapseVideos", "collapseEmbeds", "hideEmbedLinks"];
+const FILTER_KEYS = ["hideReactions", "hideStickers", "hideGifs", "collapseMedia", "collapseImages", "collapseVideos", "collapseEmbeds", "hideEmbedLinks"];
 const FILTER_LABELS = {
     hideReactions: "Hide emoji reactions",
     hideStickers: "Hide stickers",
     hideGifs: "Hide GIFs",
+    collapseMedia: "Collapse media (master)",
     collapseImages: "Collapse images",
     collapseVideos: "Collapse videos",
     collapseEmbeds: "Collapse embeds",
