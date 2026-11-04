@@ -14,11 +14,13 @@
 
 | Plugin | What it does | Version | Download |
 |---|---|---:|---|
-| **MediaFilter** | Collapses images, videos and embeds to a compact `Show` control, suppresses GIFs and stickers with a MessageStore-aware fallback, adds Alt+M per-server media and reaction toggles, and avoids empty media gaps. | 1.1.0 | [MediaFilter.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/MediaFilter.plugin.js) |
+| **MediaFilter** | Collapses images, videos and embeds to a compact `Show` control, suppresses GIFs and stickers with a MessageStore-aware fallback, adds Alt+M per-server media and reaction toggles, and avoids empty media gaps. | 1.1.1 | [MediaFilter.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/MediaFilter.plugin.js) |
 | **GoodEmoji** | Rewrites a small set of sad/toxic emoji into deliberately cheerful alternatives. | 1.1.1 | [GoodEmoji.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/GoodEmoji.plugin.js) |
 | **SilentTyping** | Stops Discord from sending your outgoing typing indicator while leaving incoming typing indicators untouched. | 1.0.0 | [SilentTyping.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/SilentTyping.plugin.js) |
 
 ### MediaFilter
+
+**1.1.1 regression fix:** Prevent duplicate nested Show/Hide controls in React and DOM fallback, keep individual media items independently revealable, and force compact reveal-button sizing. No changes to per-server filters or Alt+M shortcuts. Live Discord verification is still recommended.
 
 **New in 1.1.0:** Press **Alt + M** in Discord to open or close the floating quick-control panel. It opens for the currently selected server and can switch to any other server or DMs. The server selector prioritizes sidebar order and frequently visited guilds. Changes are persisted as per-server overrides on top of global settings.
 
