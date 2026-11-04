@@ -1,6 +1,6 @@
 /**
  * @name MediaFilter
- * @version 1.1.0
+ * @version 1.1.1
  * @author vacterro
  * @description Per-server filtering and Alt+M quick controls for media, stickers and emoji reactions.
  * @source https://github.com/vacterro/BetterDiscord_vac34_plugins/blob/main/MediaFilter.plugin.js
@@ -1089,7 +1089,9 @@ function reconcileDomMedia(row, enabled, message) {
             const target = fallbackMediaTarget(leaf, row);
             if (!target || target === row || !row.contains(target)) continue;
             if (!shouldCollapseDom(target)) continue;
-            if (target.closest?.('.vac34-mf-shell') || target.closest?.('.' + STICKER_HIDDEN_CLASS)) continue;
+            // The React shell already owns the media; never wrap its parent too.
+            if (target.closest?.('.vac34-mf-shell') || target.querySelector?.('.vac34-mf-shell')
+                || target.closest?.('.' + STICKER_HIDDEN_CLASS)) continue;
             if (target.classList.contains(GIF_HIDDEN_CLASS) || target.closest?.('.' + GIF_HIDDEN_CLASS)) continue;
             targets.add(target);
         }
@@ -1100,7 +1102,9 @@ function reconcileDomMedia(row, enabled, message) {
             for (const candidate of row.querySelectorAll?.(DOM_MEDIA_BOUNDARIES) || []) {
                 if (!candidate.closest?.(DOM_MEDIA_ACCESSORIES) || candidate.matches?.(DOM_MEDIA_ACCESSORIES)) continue;
                 if (!shouldCollapseDom(candidate)) continue;
-                if (candidate.closest?.('.vac34-mf-shell') || candidate.closest?.('.' + GIF_HIDDEN_CLASS)) continue;
+                // Hidden React media contain no image leaf; check nested shells too.
+                if (candidate.closest?.('.vac34-mf-shell') || candidate.querySelector?.('.vac34-mf-shell')
+                    || candidate.closest?.('.' + GIF_HIDDEN_CLASS)) continue;
                 if (candidate.querySelector?.('[id^="message-content-"], [class*="messageContent"], [class*="repliedMessage"]')) continue;
                 if (candidate.querySelector?.('img, video, iframe, canvas, [style*="background-image"]')) continue;
                 if (candidate.querySelector?.(DOM_MEDIA_BOUNDARIES)) continue;
@@ -1108,6 +1112,13 @@ function reconcileDomMedia(row, enabled, message) {
                 if (Array.from(targets).some((target) => candidate.contains(target) || target.contains(candidate))) continue;
                 targets.add(candidate);
             }
+        }
+    }
+    // Nested Discord media boundaries may reference the same item.
+    // Own only the outermost overlapping candidate, while preserving siblings.
+    for (const child of Array.from(targets)) {
+        if (Array.from(targets).some((parent) => parent !== child && parent.contains?.(child))) {
+            targets.delete(child);
         }
     }
     // If media is replaced by text/GIF during virtualization, release stale
@@ -1341,10 +1352,13 @@ function detachStoreListeners() {
     storeListenersAttached = false;
 }
 
+// A parent MediaShell owns its React subtree. Child renderers do not add another toggle.
+const MediaShellContext = React.createContext?.(false) ?? null;
 const MediaShell = ({ children, kind }) => {
     const settings = Settings.useCurrent();
     const [shown, setShown] = React.useState(false);
-    if (!scopeEnabled(settings) || !shouldCollapse(kind, effectiveSettings(settings))) return children;
+    const insideMediaShell = MediaShellContext ? React.useContext(MediaShellContext) : false;
+    if (insideMediaShell || !scopeEnabled(settings) || !shouldCollapse(kind, effectiveSettings(settings))) return children;
 
     return React.createElement(
         "div",
@@ -1352,7 +1366,9 @@ const MediaShell = ({ children, kind }) => {
             className: "vac34-mf-shell vac34-mf-" + kind + " " + (shown ? "vac34-mf-shown" : "vac34-mf-hidden"),
             "data-vac34-plugin-ui": "media-filter",
         },
-        shown ? children : null,
+        shown && MediaShellContext
+            ? React.createElement(MediaShellContext.Provider, { value: true }, children)
+            : shown ? children : null,
         React.createElement(
             "button",
             {
@@ -1429,14 +1445,20 @@ html[data-vac34-mf-reactions] :is(li[id^="chat-messages-"], [data-list-item-id^=
 .vac34-mf-quick__top, .vac34-mf-quick__foot { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px; }
 .vac34-mf-quick__foot { margin-top:12px; margin-bottom:0; }
 .vac34-mf-quick__muted { color:var(--text-muted,#aaa); font-size:11px; }
-.vac34-mf-shell { min-width: 0; max-width: 100%; }
+.vac34-mf-shell { min-width: 0 !important; max-width: 100%; box-sizing: border-box !important; }
 .vac34-mf-hidden {
-    display: flex !important; align-items: center !important; width: max-content !important;
+    display: inline-flex !important; align-items: center !important;
+    justify-content: flex-start !important; flex: 0 0 auto !important;
+    width: fit-content !important; max-width: 100% !important;
     min-width: 0 !important; min-height: 0 !important; height: auto !important;
     margin: 1px 0 !important; padding: 0 !important;
 }
 .vac34-mf-shown { position: relative; display: block; width: fit-content; max-width: 100%; }
 .vac34-mf-toggle {
+    display: inline-flex !important; flex: 0 0 auto !important;
+    align-items: center !important; justify-content: center !important;
+    width: auto !important; min-width: 0 !important; max-width: max-content !important;
+    box-sizing: border-box !important; white-space: nowrap !important;
     font: inherit; font-size: 11px; line-height: 16px; min-height: 18px; padding: 0 6px; margin: 0;
     border: 1px solid var(--background-modifier-accent, #555); border-radius: 2px;
     color: var(--text-normal, #ddd); background: var(--background-secondary, #222); cursor: pointer;
@@ -1451,7 +1473,7 @@ html[data-vac34-mf-reactions] :is(li[id^="chat-messages-"], [data-list-item-id^=
 html[data-vac34-mf-stickers] .${STICKER_ACCESSORY_CLASS} { display: none !important; }
 html[data-vac34-mf-gifs] .${GIF_HIDDEN_CLASS} { display: none !important; }
 .${DOM_MEDIA_HIDDEN_CLASS} { display: none !important; }
-.${DOM_MEDIA_BUTTON_CLASS} { display: inline-flex !important; align-items: center; justify-content: center; }
+.${DOM_MEDIA_BUTTON_CLASS} { display: inline-flex !important; flex: 0 0 auto !important; width: auto !important; max-width: max-content !important; align-items: center; justify-content: center; }
 html[data-vac34-mf-gifs] button[aria-label="gif" i],
 html[data-vac34-mf-gifs] button[aria-label*="gif picker" i],
 html[data-vac34-mf-gifs] button[aria-label*="гиф" i],
@@ -1615,9 +1637,9 @@ const index = createPlugin({
                         const attachments = props?.attachments ?? [];
                         if (!childResult || attachments.length === 0 || !scopeEnabled()) return childResult;
                         if (effectiveSettings().hideGifs !== false && attachments.every((entry) => isGifAttachment(entry?.attachment))) return null;
-                        const kinds = attachments.map((entry) => isVideoAttachment(entry?.attachment) ? "video" : "image");
-                        if (kinds.some((kind) => !shouldCollapse(kind))) return childResult;
-                        return React.createElement(MediaShell, { kind: kinds.every((kind) => kind === "video") ? "video" : "attachment" }, childResult);
+                        // MediaItem/Embed already collapse eligible children. Never
+                        // wrap the entire attachments subtree a second time.
+                        return childResult;
                     });
                 }
             }, { name: "MessageFooter renderAttachments" });
