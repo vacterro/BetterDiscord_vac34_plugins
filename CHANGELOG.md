@@ -1,5 +1,14 @@
 # Changelog
 
+## MediaFilter 1.1.1
+
+- Fix nested Show/Hide buttons when Discord renderAttachments, MediaItem/Embed and DOM fallback targeted the same media subtree.
+- Deduplicate overlapping DOM fallback media targets, and never wrap a container that already contains a React-owned media shell.
+- Use React context to prevent nested media-shell ownership; retain independent sibling media controls.
+- Force compact Show/Hide button dimensions in Discord flex layouts instead of full-width bars.
+- Preserve Alt+M, per-server overrides, emoji-reaction filtering, GIFs and stickers.
+- Add targeted regression tests for nested React/DOM controls and button sizing; live Discord verification still required.
+
 ## MediaFilter 1.1.0
 
 - Add an Alt+M floating quick-controls panel with independent persistent settings for each Discord server and DMs.
