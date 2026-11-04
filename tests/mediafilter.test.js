@@ -124,7 +124,16 @@ function fixture() {
         MessageStore: { getMessage: (_channel, id) => messages.get(id) || null },
     };
     const api = {
-        React: { isValidElement: () => false },
+        React: {
+            isValidElement: () => false,
+            createContext: (value) => ({ value, Provider: function Provider() {} }),
+            useContext: (context) => context.value,
+            useState: (initial) => [initial, () => {}],
+            useSyncExternalStore: (_subscribe, snapshot) => snapshot(),
+            createElement: (type, props, ...children) => ({
+                type, props: { ...props, children: children.length === 1 ? children[0] : children },
+            }),
+        },
         Webpack: { getModule: () => undefined, getStore: (name) => stores[name], Stores: stores },
         Data: { load: () => ({}), save: () => {} },
     };
@@ -134,7 +143,7 @@ function fixture() {
         document: { createElement: () => new FakeElement('toggle') },
         AbortController, queueMicrotask,
     });
-    const exposed = vm.runInContext(source + '\n({ Settings, isGifAttachment, isGifEmbed, isGifMediaElement, gifOnlyMessage, reconcileStickerRows, messageForRow, clearDomMediaFallback, effectiveSettings, updateServerFilter, clearServerFilters, shouldCollapse, shouldCollapseDom, css, setMeta });', context);
+    const exposed = vm.runInContext(source + '\n({ Settings, isGifAttachment, isGifEmbed, isGifMediaElement, gifOnlyMessage, reconcileStickerRows, messageForRow, clearDomMediaFallback, effectiveSettings, updateServerFilter, clearServerFilters, shouldCollapse, shouldCollapseDom, css, setMeta, MediaShell, MediaShellContext });', context);
     exposed.setMeta({ name: 'MediaFilter', version: '1.1.0' });
     return { ...exposed, messages, stores };
 }
@@ -509,4 +518,53 @@ test('DM profile is independent of guild profiles', () => {
     assert.equal(f.effectiveSettings().hideReactions, true);
     f.stores.SelectedGuildStore.getGuildId = () => 'guild-1';
     assert.equal(f.effectiveSettings().hideReactions, false);
+});
+
+test('React MediaShell creates one compact reveal surface and skips nested shells', () => {
+    const f = fixture();
+    const media = { type: 'video-preview' };
+    const shell = f.MediaShell({ kind: 'media-video', children: media });
+    assert.equal(shell.type, 'div');
+    assert.match(shell.props.className, /vac34-mf-hidden/);
+    assert.equal(shell.props.children[0], null);
+    assert.equal(shell.props.children[1].type, 'button');
+
+    f.MediaShellContext.value = true;
+    assert.equal(f.MediaShell({ kind: 'media-video', children: media }), media);
+    f.MediaShellContext.value = false;
+});
+
+test('DOM fallback does not wrap a parent which already contains a React MediaShell', () => {
+    const f = fixture();
+    f.messages.set(messageId, { id: messageId, content: '', attachments: [{ filename: 'photo.png' }] });
+    const shell = new FakeElement('shell', { class: 'vac34-mf-shell' });
+    const media = new FakeElement('media-wrapper', {}, [shell]);
+    const item = row(new FakeElement('accessories', {}, [media]));
+    f.reconcileStickerRows(item);
+    assert.equal(item.querySelectorAll('.vac34-mf-dom-media-toggle').length, 0);
+    assert.equal(media.classList.contains('vac34-mf-dom-media-hidden'), false);
+});
+
+test('nested DOM media containers receive one Show control, siblings remain independent', () => {
+    const f = fixture();
+    const nested = new FakeElement('media-wrapper', {}, [
+        new FakeElement('media-wrapper', {}, [
+            new FakeElement('regular-img', { src: 'https://cdn.discordapp.com/attachments/1/2/photo.png' }),
+        ]),
+    ]);
+    const sibling = new FakeElement('media-wrapper', {}, [
+        new FakeElement('regular-img', { src: 'https://cdn.discordapp.com/attachments/3/4/second.png' }),
+    ]);
+    const item = row(nested, sibling);
+    f.reconcileStickerRows(item);
+    assert.equal(item.querySelectorAll('.vac34-mf-dom-media-toggle').length, 2);
+    f.reconcileStickerRows(item);
+    assert.equal(item.querySelectorAll('.vac34-mf-dom-media-toggle').length, 2);
+});
+
+test('reveal CSS is compact and explicitly non-stretching', () => {
+    const f = fixture();
+    assert.match(f.css, /\.vac34-mf-hidden\s*\{[^}]*display:\s*inline-flex\s*!important/);
+    assert.match(f.css, /\.vac34-mf-toggle\s*\{[^}]*width:\s*auto\s*!important/);
+    assert.match(f.css, /\.vac34-mf-toggle\s*\{[^}]*flex:\s*0 0 auto\s*!important/);
 });
