@@ -96,6 +96,7 @@ class FakeElement {
         function collect(node) { for (const child of node.children) { all.push(child); collect(child); } }
         collect(this);
         if (selector.includes('chat-messages-')) return all.filter((el) => el.kind === 'row');
+        if (selector.includes('blockedMessage')) return all.filter((el) => /blockedMessage|blockedMessages|blocked_|blocked-/.test(el.className));
         if (selector.startsWith('.vac34-mf-')) {
             return all.filter((el) => el.classList.contains(selector.slice(1)));
         }
@@ -122,6 +123,7 @@ function fixture() {
         SelectedGuildStore: selectedGuild,
         SelectedChannelStore: selectedChannel,
         MessageStore: { getMessage: (_channel, id) => messages.get(id) || null },
+        RelationshipStore: { isBlocked: () => false, isIgnored: () => false },
     };
     const api = {
         React: {
@@ -144,7 +146,7 @@ function fixture() {
         AbortController, queueMicrotask,
     });
     const exposed = vm.runInContext(source + '\n({ Settings, isGifAttachment, isGifEmbed, isGifMediaElement, gifOnlyMessage, reconcileStickerRows, messageForRow, clearDomMediaFallback, effectiveSettings, updateServerFilter, clearServerFilters, shouldCollapse, shouldCollapseDom, css, setMeta, MediaShell, MediaShellContext });', context);
-    exposed.setMeta({ name: 'MediaFilter', version: '1.1.0' });
+    exposed.setMeta({ name: 'MediaFilter', version: '1.1.2' });
     return { ...exposed, messages, stores };
 }
 
@@ -567,4 +569,59 @@ test('reveal CSS is compact and explicitly non-stretching', () => {
     assert.match(f.css, /\.vac34-mf-hidden\s*\{[^}]*display:\s*inline-flex\s*!important/);
     assert.match(f.css, /\.vac34-mf-toggle\s*\{[^}]*width:\s*auto\s*!important/);
     assert.match(f.css, /\.vac34-mf-toggle\s*\{[^}]*flex:\s*0 0 auto\s*!important/);
+});
+
+
+test('blocked and ignored users vanish as entire message rows, not just their contents', () => {
+    const f = fixture();
+    const blocked = new Set(['blocked-id']);
+    const ignored = new Set(['ignored-id']);
+    f.stores.RelationshipStore.isBlocked = id => blocked.has(id);
+    f.stores.RelationshipStore.isIgnored = id => ignored.has(id);
+    const item = row(new FakeElement('content', {}, [], 'Some blocked text'));
+    f.messages.set(messageId, { id: messageId, author: { id: 'blocked-id' }, content: 'Some blocked text' });
+    f.reconcileStickerRows(item);
+    assert.equal(item.classList.contains('vac34-mf-blocked-row'), true);
+    f.messages.set(messageId, { id: messageId, author: { id: 'ignored-id' }, content: 'Some ignored text' });
+    f.reconcileStickerRows(item);
+    assert.equal(item.classList.contains('vac34-mf-blocked-row'), true);
+    f.messages.set(messageId, { id: messageId, author: { id: 'ordinary-id' }, content: 'Some regular text' });
+    f.reconcileStickerRows(item);
+    assert.equal(item.classList.contains('vac34-mf-blocked-row'), false);
+});
+
+test('Discord collapsed 2 blocked messages — Show banner is suppressed, with no text-only false positives', () => {
+    const f = fixture();
+    const blocked = new FakeElement('blocked-container', { class: 'blockedMessages_a1b2' }, [], '2 blocked messages — Show');
+    const item = row(blocked);
+    f.reconcileStickerRows(item);
+    assert.equal(item.classList.contains('vac34-mf-blocked-row'), true);
+    assert.match(f.css, /data-vac34-mf-blocked/);
+    assert.match(f.css, /groupStart/);
+    assert.match(f.css, /display:\s*none\s*!important/);
+    const ordinary = row(new FakeElement('content', {}, [], 'Unrelated blocked discussion'));
+    f.reconcileStickerRows(ordinary);
+    assert.equal(ordinary.classList.contains('vac34-mf-blocked-row'), false);
+});
+
+test('blocked message filtering obeys per-server overrides, DM scope and live off switch', () => {
+    const f = fixture();
+    f.stores.RelationshipStore.isBlocked = id => id === 'blocked-id';
+    f.messages.set(messageId, { id: messageId, author: { id: 'blocked-id' }, content: 'Blocked' });
+    const item = row(new FakeElement('content', {}, [], 'Blocked'));
+    f.reconcileStickerRows(item);
+    assert.equal(item.classList.contains('vac34-mf-blocked-row'), true);
+    f.updateServerFilter('guild-1', 'hideBlockedMessages', false);
+    f.reconcileStickerRows(item);
+    assert.equal(item.classList.contains('vac34-mf-blocked-row'), false);
+    f.stores.SelectedGuildStore.getGuildId = () => 'guild-2';
+    f.reconcileStickerRows(item);
+    assert.equal(item.classList.contains('vac34-mf-blocked-row'), true);
+    f.stores.SelectedGuildStore.getGuildId = () => null;
+    f.Settings.current.enableDMs = false;
+    f.reconcileStickerRows(item);
+    assert.equal(item.classList.contains('vac34-mf-blocked-row'), false);
+    f.Settings.current.enableDMs = true;
+    f.reconcileStickerRows(item);
+    assert.equal(item.classList.contains('vac34-mf-blocked-row'), true);
 });

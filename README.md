@@ -14,17 +14,19 @@
 
 | Plugin | What it does | Version | Download |
 |---|---|---:|---|
-| **MediaFilter** | Collapses images, videos and embeds to a compact `Show` control, suppresses GIFs and stickers with a MessageStore-aware fallback, adds Alt+M per-server media and reaction toggles, and avoids empty media gaps. | 1.1.1 | [MediaFilter.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/MediaFilter.plugin.js) |
+| **MediaFilter** | Collapses images, videos and embeds to a compact `Show` control, suppresses GIFs and stickers with a MessageStore-aware fallback, adds Alt+M per-server media and reaction toggles, and avoids empty media gaps. | 1.1.2 | [MediaFilter.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/MediaFilter.plugin.js) |
 | **GoodEmoji** | Rewrites a small set of sad/toxic emoji into deliberately cheerful alternatives. | 1.1.1 | [GoodEmoji.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/GoodEmoji.plugin.js) |
 | **SilentTyping** | Stops Discord from sending your outgoing typing indicator while leaving incoming typing indicators untouched. | 1.0.0 | [SilentTyping.plugin.js](https://raw.githubusercontent.com/vacterro/BetterDiscord_vac34_plugins/main/SilentTyping.plugin.js) |
 
 ### MediaFilter
 
+**1.1.2:** Blocked/ignored user messages and Discord's "N blocked messages — Show" placeholders are hidden entirely, with no message-row gap. Enabled by default; per-server and DM overrides are available in Alt+M. This is client-side visibility only, not deletion or blocking/unblocking anyone.
+
 **1.1.1 regression fix:** Prevent duplicate nested Show/Hide controls in React and DOM fallback, keep individual media items independently revealable, and force compact reveal-button sizing. No changes to per-server filters or Alt+M shortcuts. Live Discord verification is still recommended.
 
 **New in 1.1.0:** Press **Alt + M** in Discord to open or close the floating quick-control panel. It opens for the currently selected server and can switch to any other server or DMs. The server selector prioritizes sidebar order and frequently visited guilds. Changes are persisted as per-server overrides on top of global settings.
 
-You can independently toggle emoji **reactions under messages**, GIFs, stickers, image collapse, video collapse, embed collapse, duplicate embed URLs and the existing media-collapse master setting. Inline emojis in message text are not targeted by the reactions filter. Disabling reactions hides the native reaction bar visually; it does not delete reactions or alter Discord messages.
+You can independently toggle **blocked-message hiding**, emoji **reactions under messages**, GIFs, stickers, image collapse, video collapse, embed collapse, duplicate embed URLs and the existing media-collapse master setting. Inline emojis in message text are not targeted by the reactions filter. Disabling reactions hides the native reaction bar visually; it does not delete reactions or alter Discord messages.
 
 Most changes apply instantly via settings listeners, message DOM reconciliation and the active-server CSS flag. If a Discord renderer does not react immediately, press **Ctrl + R**. Reset this server restores inherited global settings. **Alt + M** again, Escape or clicking outside closes the popup. Old settings are retained.
 

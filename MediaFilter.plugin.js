@@ -1,8 +1,8 @@
 /**
  * @name MediaFilter
- * @version 1.1.1
+ * @version 1.1.2
  * @author vacterro
- * @description Per-server filtering and Alt+M quick controls for media, stickers and emoji reactions.
+ * @description Per-server Alt+M controls for media, stickers, reactions and blocked users.
  * @source https://github.com/vacterro/BetterDiscord_vac34_plugins/blob/main/MediaFilter.plugin.js
  * @website https://github.com/vacterro/BetterDiscord_vac34_plugins
  * @license MIT
@@ -392,6 +392,7 @@ const Settings = createSettings({
     hideStickers: true,
     hideEmbedLinks: true,
     hideReactions: false,
+    hideBlockedMessages: true,
     collapseImages: true,
     collapseVideos: true,
     collapseEmbeds: true,
@@ -521,8 +522,9 @@ function selectedGuildId() {
     catch { return null; }
 }
 
-const FILTER_KEYS = ["hideReactions", "hideStickers", "hideGifs", "collapseMedia", "collapseImages", "collapseVideos", "collapseEmbeds", "hideEmbedLinks"];
+const FILTER_KEYS = ["hideBlockedMessages", "hideReactions", "hideStickers", "hideGifs", "collapseMedia", "collapseImages", "collapseVideos", "collapseEmbeds", "hideEmbedLinks"];
 const FILTER_LABELS = {
+    hideBlockedMessages: "Hide blocked / ignored messages entirely",
     hideReactions: "Hide emoji reactions",
     hideStickers: "Hide stickers",
     hideGifs: "Hide GIFs",
@@ -657,6 +659,7 @@ function linkMatchesEmbed(href, embeds) {
 }
 
 const STICKER_ROW_CLASS = "vac34-mf-sticker-empty-row";
+const BLOCKED_ROW_CLASS = "vac34-mf-blocked-row";
 const STICKER_HIDDEN_CLASS = "vac34-mf-sticker-hidden";
 const STICKER_ACCESSORY_CLASS = "vac34-mf-sticker-accessory-hidden";
 const GIF_HIDDEN_CLASS = "vac34-mf-gif-hidden";
@@ -678,6 +681,7 @@ const DOM_MEDIA_BOUNDARIES = [
 const DOM_MEDIA_ACCESSORIES = '[id^="message-accessories-"], [class*="messageAccessories"], [class*="accessories_"]';
 const domMediaButtons = new WeakMap();
 const MEDIA_ROW_SELECTOR = 'li[id^="chat-messages-"], [data-list-item-id^="chat-messages"], [class*="messageListItem"]';
+const BLOCKED_MARKUP_SELECTOR = '[class*="blockedMessage"], [class*="blockedMessages"], [class*="blocked_"], [class*="blocked-"]';
 const stickerOnlyIds = new Set();
 let stickerObserver = null;
 let storeListenersAttached = false;
@@ -705,6 +709,19 @@ function messageForRow(row) {
             || null;
     }
     catch { return null; }
+}
+
+function isBlockedAuthor(message) {
+    const authorId = message?.author?.id ?? message?.authorId ?? message?.author_id;
+    if (authorId == null) return false;
+    try {
+        const store = BdApi.Webpack.getStore?.("RelationshipStore") || BdApi.Webpack.Stores?.RelationshipStore;
+        const id = String(authorId);
+        return Boolean(store?.isBlocked?.(id) || store?.isIgnored?.(id));
+    } catch { return false; }
+}
+function isBlockedPlaceholder(row) {
+    return Boolean(row?.matches?.(BLOCKED_MARKUP_SELECTOR) || row?.querySelector?.(BLOCKED_MARKUP_SELECTOR));
 }
 
 function hasStickers(message) {
@@ -1184,13 +1201,16 @@ function reconcileStickerRows(root = document) {
     const inScope = scopeEnabled();
     const enabled = effectiveSettings().hideStickers !== false && inScope;
     const gifEnabled = effectiveSettings().hideGifs !== false && inScope;
+    const blockedEnabled = effectiveSettings().hideBlockedMessages !== false && inScope;
     const rows = [];
     if (root.matches?.(MEDIA_ROW_SELECTOR)) rows.push(root);
     for (const row of root.querySelectorAll(MEDIA_ROW_SELECTOR)) rows.push(row);
 
     for (const row of rows) {
         const id = rowMessageId(row);
-        const message = (enabled || gifEnabled) ? messageForRow(row) : null;
+        const message = (enabled || gifEnabled || blockedEnabled) ? messageForRow(row) : null;
+        row.classList.toggle(BLOCKED_ROW_CLASS,
+            blockedEnabled && (isBlockedPlaceholder(row) || isBlockedAuthor(message)));
         if (enabled && id && message) {
             if (hasStickers(message) && !messageHasNonStickerPayload(message)) stickerOnlyIds.add(id);
             else stickerOnlyIds.delete(id);
@@ -1285,7 +1305,7 @@ function startStickerObserver() {
                 // Ignore our own hide/show marker mutations (avoids loops).
                 if (record.attributeName === "class") {
                     const withoutMarkers = (value) => String(value || "").replace(
-                        /\bvac34-mf-(?:sticker-empty-row|sticker-hidden|sticker-accessory-hidden|gif-hidden|dom-media-hidden|dom-media-target|dom-media-toggle)\b/g, ""
+                        /\bvac34-mf-(?:sticker-empty-row|blocked-row|sticker-hidden|sticker-accessory-hidden|gif-hidden|dom-media-hidden|dom-media-target|dom-media-toggle)\b/g, ""
                     ).replace(/\s+/g, " ").trim();
                     if (withoutMarkers(record.oldValue) === withoutMarkers(record.target.className)) continue;
                 }
@@ -1312,6 +1332,7 @@ function stopStickerObserver() {
     queuedMediaRows.clear();
     stickerOnlyIds.clear();
     document.querySelectorAll("." + STICKER_ROW_CLASS).forEach((row) => row.classList.remove(STICKER_ROW_CLASS));
+    document.querySelectorAll("." + BLOCKED_ROW_CLASS).forEach((row) => row.classList.remove(BLOCKED_ROW_CLASS));
     document.querySelectorAll("." + STICKER_HIDDEN_CLASS).forEach((el) => el.classList.remove(STICKER_HIDDEN_CLASS));
     document.querySelectorAll("." + STICKER_ACCESSORY_CLASS).forEach((el) => el.classList.remove(STICKER_ACCESSORY_CLASS));
     document.querySelectorAll("." + GIF_HIDDEN_CLASS).forEach((el) => el.classList.remove(GIF_HIDDEN_CLASS));
@@ -1325,6 +1346,7 @@ function syncGlobalFlags() {
     root.toggleAttribute("data-vac34-mf-gifs", inScope && effectiveSettings().hideGifs !== false);
     root.toggleAttribute("data-vac34-mf-stickers", inScope && effectiveSettings().hideStickers !== false);
     root.toggleAttribute("data-vac34-mf-reactions", inScope && effectiveSettings().hideReactions === true);
+    root.toggleAttribute("data-vac34-mf-blocked", inScope && effectiveSettings().hideBlockedMessages !== false);
     trackServerVisit();
     reconcileStickerRows(document);
     renderQuickPanel();
@@ -1419,6 +1441,7 @@ function SettingsPanel() {
         row(checkbox("Remove GIFs", settings.hideGifs !== false, (value) => setSettings({ hideGifs: value }))),
         row(checkbox("Remove stickers", settings.hideStickers !== false, (value) => setSettings({ hideStickers: value }))),
         row(checkbox("Hide emoji reactions (not inline emoji)", settings.hideReactions === true, (value) => setSettings({ hideReactions: value }))),
+        row(checkbox("Hide blocked / ignored messages and their Show placeholders", settings.hideBlockedMessages !== false, (value) => setSettings({ hideBlockedMessages: value }))),
         row(checkbox("Collapse images", settings.collapseImages !== false, (value) => setSettings({ collapseImages: value }))),
         row(checkbox("Collapse videos", settings.collapseVideos !== false, (value) => setSettings({ collapseVideos: value }))),
         row(checkbox("Collapse embeds", settings.collapseEmbeds !== false, (value) => setSettings({ collapseEmbeds: value }))),
@@ -1437,6 +1460,9 @@ function SettingsPanel() {
 }
 
 const css = `
+html[data-vac34-mf-blocked] .${BLOCKED_ROW_CLASS} { display: none !important; }
+html[data-vac34-mf-blocked] :is(li[id^="chat-messages-"], [data-list-item-id^="chat-messages"], [class*="messageListItem"], [class*="groupStart"]):has(:is([class*="blockedMessage"], [class*="blockedMessages"], [class*="blocked_"], [class*="blocked-"])) { display: none !important; }
+html[data-vac34-mf-blocked] :is([class*="blockedMessage"], [class*="blockedMessages"]) { display: none !important; }
 html[data-vac34-mf-reactions] :is(li[id^="chat-messages-"], [data-list-item-id^="chat-messages"], [class*="messageListItem"]) :is([class^="reactions_"], [class*=" reactions_"], [class^="reactionsContainer_"], [class*=" reactionsContainer_"], [class^="reactions-"], [class*=" reactions-"]) { display: none !important; }
 .vac34-mf-quick { position:fixed; z-index:100050; right:22px; top:75px; width:330px; max-width:calc(100vw - 32px); max-height:80vh; overflow:auto; box-sizing:border-box; border-radius:10px; border:1px solid var(--background-modifier-accent,#444); background:var(--background-secondary,#26272d); color:var(--text-normal,#eee); box-shadow:0 14px 50px #0009; padding:14px; font-size:13px; }
 .vac34-mf-quick button, .vac34-mf-quick select { background:var(--background-tertiary,#1e1f23); color:inherit; border:1px solid var(--background-modifier-accent,#555); border-radius:5px; padding:5px; cursor:pointer; }
@@ -1673,6 +1699,7 @@ const index = createPlugin({
         document.documentElement?.removeAttribute("data-vac34-mf-gifs");
         document.documentElement?.removeAttribute("data-vac34-mf-stickers");
         document.documentElement?.removeAttribute("data-vac34-mf-reactions");
+        document.documentElement?.removeAttribute("data-vac34-mf-blocked");
         stopQuickPanel();
     },
     styles: css,

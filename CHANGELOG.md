@@ -1,3 +1,11 @@
+## MediaFilter 1.1.2
+
+- Hide blocked and ignored users' complete message rows, including Discord's native "N blocked messages — Show" placeholder and associated layout.
+- Add a default-on Hide blocked / ignored messages control to global settings and Alt+M's per-server/DM quick panel.
+- Use relationship data for revealed message rows and DOM/CSS guards for collapsed placeholders; restore rows when a user is unblocked, the filter is disabled, or scope changes.
+- Preserve reaction, GIF, sticker and media controls; add focused offline regressions.
+- Live Discord client verification is still required.
+
 # Changelog
 
 ## MediaFilter 1.1.1
